@@ -1,3 +1,2 @@
 # Comeback-on
-[Ai 지니어스 아카데미]
-app.py
+[AI 지니어스 아카데미]
