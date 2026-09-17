@@ -3,8 +3,8 @@
 data/ 폴더의 CSV들을 읽어 카테고리별 레이어와 밀도(Heatmap)를 지도에 표시한다.
 분석 단위를 '골목길(Link)'로 할지 '격자(Grid)'로 할지 판단하기 위한 사전 탐색용 도구.
 
-지원하지 않는 파일(좌표 컬럼이 없는 주소 전용 데이터, 자치구별 집계 통계표 등)은
-자동으로 건너뛰고 경고로 안내한다. 자세한 내용은 data/README.md 참고.
+지원하지 않는 파일(좌표 컬럼이 없는 집계 통계표 등)은 자동으로 건너뛴다.
+자세한 내용은 data/README.md 참고.
 
 실행: streamlit run app.py
 """
@@ -21,7 +21,12 @@ from streamlit_folium import st_folium
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DEFAULT_CENTER = (37.5665, 126.9780)  # 서울시청 기준 기본 좌표
-DEFAULT_ZOOM = 15
+DEFAULT_ZOOM = 12  # 서울 시내 전체가 한눈에 들어오는 줌 레벨
+
+# 서울시 위경도 바운딩 박스. 이 범위 밖 좌표(전국 CCTV/가로등 데이터 등)는
+# load_public_csv 단계에서 원천적으로 제외해 렌더링 대상 포인트 수와 로딩 시간을 줄인다.
+SEOUL_LAT_RANGE = (37.41, 37.71)
+SEOUL_LON_RANGE = (126.73, 127.27)
 
 # 컬럼명은 데이터셋마다 순서/표기가 달라서(예: WGS84위도 vs 위도, 위도-경도 순서 반대 등)
 # 위치가 아니라 이름으로 찾는다.
@@ -65,7 +70,7 @@ def classify_category(filename: str):
 def load_public_csv(filepath: str) -> pd.DataFrame:
     """공공데이터 CSV를 읽어 lat/lon/address로 표준화된 DataFrame을 반환한다.
 
-    좌표 컬럼을 찾지 못하면(주소만 있는 데이터, 집계 통계표 등) ValueError를 던진다.
+    좌표 컬럼을 찾지 못하면(집계 통계표 등) ValueError를 던진다.
     """
     df = None
     for encoding in ("utf-8-sig", "cp949", "euc-kr"):
@@ -80,7 +85,7 @@ def load_public_csv(filepath: str) -> pd.DataFrame:
     lat_col = _find_column(df.columns, LAT_CANDIDATES)
     lon_col = _find_column(df.columns, LON_CANDIDATES)
     if lat_col is None or lon_col is None:
-        raise ValueError("위도/경도 컬럼을 찾을 수 없습니다 (주소 전용 데이터이거나 집계 통계표일 수 있음)")
+        raise ValueError("위도/경도 컬럼을 찾을 수 없습니다 (집계 통계표일 수 있음)")
 
     address_col = _find_column(df.columns, ADDRESS_CANDIDATES)
 
@@ -92,8 +97,8 @@ def load_public_csv(filepath: str) -> pd.DataFrame:
         }
     )
     result = result.dropna(subset=["lat", "lon"])
-    # 대한민국 영역 밖 값(좌표 오류, 위경도 컬럼이 뒤바뀐 경우 등)은 제외
-    result = result[result["lat"].between(30, 43) & result["lon"].between(120, 132)]
+    # 서울시 영역 밖 값(다른 지자체 데이터, 좌표 오류, 위경도 컬럼이 뒤바뀐 경우 등)은 제외
+    result = result[result["lat"].between(*SEOUL_LAT_RANGE) & result["lon"].between(*SEOUL_LON_RANGE)]
     return result.reset_index(drop=True)
 
 
@@ -199,7 +204,7 @@ def main():
         "지도 분석 단위를 '골목길(Link)' 또는 '격자(Grid)' 중 무엇으로 할지 판단하기 위한 도구입니다."
     )
 
-    datasets, warnings = load_all_datasets()
+    datasets, _warnings = load_all_datasets()
 
     if "map_center" not in st.session_state:
         st.session_state.map_center = DEFAULT_CENTER
@@ -227,9 +232,6 @@ def main():
                 st.write(f"- **{category}**: {len(info['df']):,}건")
         else:
             st.info("`data/` 폴더에 CSV 파일을 추가해주세요. (data/README.md 참고)")
-
-        for warning in warnings:
-            st.warning(f"⚠️ {warning}")
 
         st.divider()
         export_clicked = st.button("현재 지도를 HTML로 저장", use_container_width=True)
