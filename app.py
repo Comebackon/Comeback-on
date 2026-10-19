@@ -19,6 +19,8 @@ from folium.plugins import FastMarkerCluster, HeatMap
 from geopy.geocoders import Nominatim
 from streamlit_folium import st_folium
 
+import risk
+
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DEFAULT_CENTER = (37.5665, 126.9780)  # 서울시청 기준 기본 좌표
 DEFAULT_ZOOM = 12  # 서울 시내 전체가 한눈에 들어오는 줌 레벨
@@ -127,6 +129,17 @@ def load_all_datasets():
     return datasets, warnings
 
 
+@st.cache_data(show_spinner="안전 점수 계산 중...")
+def load_risk_grid():
+    """격자별 안전 점수를 계산한다. 범죄 데이터가 자치구 단위라 같은 구 안의
+    격자는 범죄 점수를 공유하고, CCTV/가로등/비상벨+안전시설물 밀도로 보정한다."""
+    datasets, _ = load_all_datasets()
+    crime_scores = risk.load_district_crime_scores(os.path.join(DATA_DIR, "지역범죄데이터.csv"))
+    return risk.compute_grid_scores(
+        datasets, crime_scores, lat_min=SEOUL_LAT_RANGE[0], lon_min=SEOUL_LON_RANGE[0]
+    )
+
+
 @st.cache_data(show_spinner="주소 검색 중...")
 def geocode_address(address: str):
     geolocator = Nominatim(user_agent="gwiga-on-safety-map")
@@ -156,8 +169,9 @@ _FAST_CLUSTER_CALLBACK = """
 """
 
 
-def build_map(datasets, center, zoom, searched_marker=None):
-    fmap = folium.Map(location=center, zoom_start=zoom, tiles="OpenStreetMap")
+def build_map(datasets, center, zoom, searched_marker=None, risk_grid=None):
+    # 격자 레이어처럼 폴리곤을 수천~수만 개 그릴 때 SVG 대신 Canvas로 렌더링해 버벅임을 줄인다.
+    fmap = folium.Map(location=center, zoom_start=zoom, tiles="OpenStreetMap", prefer_canvas=True)
 
     all_points = []
     for category, info in datasets.items():
@@ -179,6 +193,39 @@ def build_map(datasets, center, zoom, searched_marker=None):
         heat_layer = folium.FeatureGroup(name="안전 인프라 밀도 (Heatmap)", show=False)
         HeatMap(all_points, radius=18, blur=22).add_to(heat_layer)
         heat_layer.add_to(fmap)
+
+    if risk_grid is not None and not risk_grid.empty:
+        # 격자별 위험도(100 - 안전점수)를 가중치로 사용해 빨간색일수록 위험한 곳으로 표시.
+        # 격자 폴리곤을 하나하나 그리면 수만 개가 되어 무거워지므로, 기존 밀도 레이어와
+        # 동일한 HeatMap 방식으로 렌더링한다.
+        risk_points = risk_grid[["lat_center", "lon_center"]].copy()
+        risk_points["weight"] = 100 - risk_grid["safety_score"]
+        risk_layer = folium.FeatureGroup(name="안전 점수 히트맵 (빨강=위험)", show=False)
+        HeatMap(
+            risk_points.values.tolist(),
+            radius=20,
+            blur=25,
+            max_zoom=15,
+            gradient={0.2: "green", 0.5: "yellow", 0.8: "orange", 1.0: "red"},
+        ).add_to(risk_layer)
+        risk_layer.add_to(fmap)
+
+        # 격자 칸이 실제 사각형으로 보이는 레이어(기본 꺼짐). 13,000여 개 칸을
+        # 하나씩 그리면 무거워지므로 GeoJson 하나에 전부 담아 렌더링한다.
+        grid_layer = folium.FeatureGroup(name="안전 점수 격자 (칸 표시)", show=False)
+        # 200m 원본 격자를 그대로 그리면 폴리곤이 13,000개를 넘어 렌더링이 느려지므로,
+        # 지도 표시용은 4개씩 묶어(400m) 폴리곤 수를 1/4로 줄인다.
+        folium.GeoJson(
+            risk.grid_to_geojson(risk_grid, merge_factor=2),
+            style_function=lambda feature: {
+                "fillColor": feature["properties"]["color"],
+                "color": "#666666",
+                "weight": 0.3,
+                "fillOpacity": 0.55,
+            },
+            tooltip=folium.GeoJsonTooltip(fields=["safety_score", "district"], aliases=["안전 점수", "자치구"]),
+        ).add_to(grid_layer)
+        grid_layer.add_to(fmap)
 
     if searched_marker:
         lat, lon, label = searched_marker
@@ -205,11 +252,13 @@ def main():
     )
 
     datasets, _warnings = load_all_datasets()
+    risk_grid = load_risk_grid()
 
     if "map_center" not in st.session_state:
         st.session_state.map_center = DEFAULT_CENTER
         st.session_state.map_zoom = DEFAULT_ZOOM
         st.session_state.searched_marker = None
+        st.session_state.safety_score = None
 
     with st.sidebar:
         st.header("📍 주소로 이동")
@@ -221,9 +270,26 @@ def main():
                 st.session_state.map_center = (lat, lon)
                 st.session_state.map_zoom = 17
                 st.session_state.searched_marker = (lat, lon, label)
+                st.session_state.safety_score = risk.lookup_safety_score(lat, lon, risk_grid)
                 st.success(f"이동 완료: {label}")
             else:
                 st.error("주소를 찾을 수 없습니다. 다시 입력해주세요.")
+
+        score = st.session_state.safety_score
+        if score:
+            st.metric("🛡️ 안전 점수", f"{score['safety_score']:.0f} / 100", help=f"{score['district']} 기준 추정치")
+            with st.expander("점수 상세 보기"):
+                st.write(f"- 범죄 위험도: {score['crime_score']:.1f} / 5 (자치구 기준)")
+                st.write(f"- 어두운 정도(가로등 부족): {score['dark_score']:.1f} / 5")
+                st.write(f"- CCTV 밀도: {score['cctv_score']:.1f} / 5")
+                st.write(f"- 안심 인프라(비상벨·안전시설물): {score['safety_infra_score']:.1f} / 5")
+                st.caption(
+                    f"해당 {risk.CELL_SIZE_M}m 격자 내 CCTV {score['cctv_count']}건 · "
+                    f"가로등 {score['light_count']}건 · 안심 인프라 {score['safety_infra_count']}건 "
+                    "(점수는 인근 600m 반경까지 합산해 계산)"
+                )
+                if score["estimated"]:
+                    st.caption("⚠️ 정확한 위치에 데이터가 부족해 가장 가까운 격자 값으로 근사했습니다.")
 
         st.divider()
         st.header("📊 데이터 현황")
@@ -241,6 +307,7 @@ def main():
         st.session_state.map_center,
         st.session_state.map_zoom,
         st.session_state.searched_marker,
+        risk_grid,
     )
 
     if export_clicked:
