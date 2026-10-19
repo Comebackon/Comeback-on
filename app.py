@@ -167,11 +167,25 @@ def load_risk_grid():
     )
 
 
+# 자주 쓰는 학교 약칭을 정식 명칭으로 변환합니다.
+SCHOOL_ALIASES = {
+    "미림마이스터고": "미림마이스터고등학교",
+    "미림마이스터": "미림마이스터고등학교",
+    "미림마고": "미림마이스터고등학교",
+}
+
+def expand_school_name(query: str) -> str:
+    normalized = re.sub(r"\s+", "", query).lower()
+    return SCHOOL_ALIASES.get(normalized, query.strip())
+
 @st.cache_data(show_spinner="주소 검색 중...")
 def geocode_address(address: str):
+    query = expand_school_name(address)
     geolocator = Nominatim(user_agent="gwiga-on-safety-map")
     try:
-        location = geolocator.geocode(address, timeout=5, country_codes="kr")
+        location = geolocator.geocode(query, timeout=5, country_codes="kr")
+        if location is None and query != address.strip():
+            location = geolocator.geocode(f"{query}, 서울특별시 관악구", timeout=5, country_codes="kr")
     except Exception:  # 네트워크 오류·요청 제한 등으로 앱 전체가 멈추지 않도록
         return None
     if location is None:
@@ -507,7 +521,9 @@ def main():
 
     with st.sidebar:
         st.header("📍 주소로 이동")
-        address = st.text_input("주소를 입력하세요", placeholder="예) 서울특별시 강남구 테헤란로 152")
+        address = st.text_input("주소 또는 학교 이름을 입력하세요", placeholder="예) 미림마이스터고")
+        if address.strip() and expand_school_name(address) != address.strip():
+            st.caption(f"추천 검색어: {expand_school_name(address)}")
         if st.button("이동", use_container_width=True) and address:
             result = geocode_address(address)
             if result:
