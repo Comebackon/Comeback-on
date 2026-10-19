@@ -47,6 +47,12 @@ def request_pedestrian_route(start_lon, start_lat, end_lon, end_lat,
         with urlopen(request, timeout=15) as response:
             return json.load(response)
     except HTTPError as exc:
-        raise TmapAPIError(f"TMAP API HTTP 오류: {exc.code}") from exc
+        detail = exc.read().decode("utf-8", errors="replace")
+        # 서버 응답에 인증 정보가 포함될 가능성이 있어 출력 전에 마스킹한다.
+        detail = detail.replace(app_key, "[REDACTED]")
+        raise TmapAPIError(
+            f"TMAP API HTTP 오류: {exc.code}\n"
+            f"상세 내용: {detail[:500]}"
+        ) from exc
     except (URLError, TimeoutError, ValueError) as exc:
         raise TmapAPIError(f"TMAP API 연결 또는 응답 오류: {exc}") from exc
