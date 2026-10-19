@@ -26,7 +26,7 @@ from streamlit_folium import st_folium
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DEFAULT_CENTER = (37.5665, 126.9780)  # 서울시청 기준 기본 좌표
 DEFAULT_ZOOM = 12  # 서울 시내 전체가 한눈에 들어오는 줌 레벨
-
+#안뇽
 # 서울시 위경도 바운딩 박스. 이 범위 밖 좌표(전국 CCTV/가로등 데이터 등)는
 # load_public_csv 단계에서 원천적으로 제외해 렌더링 대상 포인트 수와 로딩 시간을 줄인다.
 SEOUL_LAT_RANGE = (37.41, 37.71)
