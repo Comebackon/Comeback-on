@@ -48,13 +48,13 @@ def validate(value):
     return {'endpoint': endpoint, 'keys': {k: material[k] for k in ('p256dh', 'auth')}}
 
 
-def send(db, user_id, private_key):
+def send(db, user_id, private_key, notification_id=None):
     accepted = 0
     rows = db.execute('SELECT endpoint,subscription FROM push_subscriptions WHERE user_id=? LIMIT 5', (user_id,)).fetchall()
     for row in rows:
         try:
             webpush(subscription_info=validate(json.loads(row['subscription'])),
-                    data=json.dumps({'title': '귀가 ON', 'body': '새 보호자 알림이 있어요. 사이트에서 확인해 주세요.'}),
+                    data=json.dumps({'title': '귀가 ON', 'body': '새 보호자 알림이 있어요. 사이트에서 확인해 주세요.', 'notification_id': notification_id}),
                     vapid_private_key=private_key, vapid_claims={'sub': 'https://comeback-on.kr'},
                     ttl=300, timeout=3)
             accepted += 1

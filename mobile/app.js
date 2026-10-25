@@ -128,7 +128,25 @@ async function navigate(screen){
   if(epoch===renderEpoch&&generation===accountGeneration){if(screen==='search')updatePlaceSearch();else render();}
  }catch(err){if(state.screen===screen&&generation===accountGeneration&&(screen!=='search'||!state.query.trim()))setError(err);}
 }
-async function init(){try{const data=await api('/api/me');state.user=data.user;state.capabilities=data.capabilities||{};state.settings={...state.settings,...(data.settings||{})};if(state.user){const result=await api('/api/trips');state.trip=result.trip;}}catch(err){state.error=err.message;}state.ready=true;render();}
+let pendingPushNotification = '';
+async function openPushNotification(){
+ const id=pendingPushNotification;if(!id||!state.user||state.screen!=='guardian-view')return;
+ const generation=accountGeneration;
+ try{const result=await api('/api/notifications/'+encodeURIComponent(id));
+ if(generation!==accountGeneration||state.screen!=='guardian-view')return;
+ pendingPushNotification='';const n=result.notification;
+ openDialog(notificationTitle(n),`<p class="subtle">${esc(fmtTime(n.created_at))}</p><p class="dialog-message mt-sm">${esc(n.message)}</p>`,'<button class="btn primary" data-action="dialog-close">확인</button>');
+ }catch(error){if(generation===accountGeneration){pendingPushNotification='';toast(error.message);}}
+}
+async function init(){try{const data=await api('/api/me');state.user=data.user;state.capabilities=data.capabilities||{};state.settings={...state.settings,...(data.settings||{})};if(state.user){const result=await api('/api/trips');state.trip=result.trip;}}catch(err){state.error=err.message;}state.ready=true;render();
+ if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').then(r=>r.update()).catch(()=>{});
+ const params=new URLSearchParams(window.location?.search||'');
+ if(params.get('screen')==='guardian-view'){
+ const id=params.get('notification')||'';pendingPushNotification=/^[a-f0-9]{32}$/.test(id)?id:'';
+ if(state.user){await navigate('guardian-view');await openPushNotification();}
+ else{state.afterLogin='guardian-view';await navigate('auth');}
+ }
+}
 function initMap(){const container=$('#map');if(!container)return;if(!window.L){container.innerHTML=`<div class="map-fallback">${icon('map')}<strong>지도를 불러오지 못했어요.</strong><span>인터넷 연결을 확인해 주세요.<br>아래에서 경로와 시설 정보를 볼 수 있어요.</span></div>`;return;}const center=state.location?[state.location.lat,state.location.lon]:state.start?[state.start.lat,state.start.lon]:[37.5665,126.9780];map=L.map(container,{zoomControl:false}).setView(center,15);L.control.zoom({position:'topright'}).addTo(map);const tiles=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'}).addTo(map);let tileErrors=0;tiles.on('tileerror',()=>{if(++tileErrors===3&&container.parentElement&&!$('.map-note',container.parentElement)){const n=document.createElement('div');n.className='map-note';n.textContent='지도 배경을 불러오지 못했어요. 연결을 확인해 주세요.';container.parentElement.appendChild(n);}});const bounds=[];const routes=state.screen==='trip'?[state.trip?.route]:['compare','reasons'].includes(state.screen)?state.routes:[];routes.filter(Boolean).forEach(r=>{if(!r.coordinates?.length)return;const coords=r.coordinates.filter(p=>Array.isArray(p)&&p.length===2&&p.every(Number.isFinite));if(!coords.length)return;const active=state.screen==='trip'||r.id===state.selected;L.polyline(coords,{color:active?'#142a4b':'#a7afb9',weight:active?6:4,opacity:active?1:.75,dashArray:active?null:'8 8'}).addTo(map);bounds.push(...coords);if(active){addMapMarker(coords[0],'출발','');addMapMarker(coords[coords.length-1],'도착','end');}});if(state.screen==='facilities'){filteredFacilities().slice(0,100).forEach(f=>{const marker=addMapMarker([f.lat,f.lon],f.name || f.type,'',facilityIcon(f.type));const text=document.createElement('div');text.textContent=`${f.name || f.type} · ${distance(f.distance_m)}${f.address?' / '+f.address:''}`;marker.bindPopup(text);});}
  if(state.screen==='reports'){state.reports.slice(0,100).forEach(r=>{if(!Number.isFinite(r.lat)||!Number.isFinite(r.lon))return;const pending=r.status==='pending'||r.status==='reviewing';const marker=addMapMarker([r.lat,r.lon],r.title||r.type,pending?'pending':'reviewed','flag');const text=document.createElement('div');text.textContent=`${reportStatus(r.status)} · ${r.title||r.type}`;marker.bindPopup(text);marker.on('click',()=>showReport(r.id));bounds.push([r.lat,r.lon]);});}
  if(state.location){liveMarker=addMapMarker([state.location.lat,state.location.lon],'현재 위치','location');}
@@ -296,7 +314,7 @@ async function submitAuth(form){
  clearAccountData();state.user=result.user;state.csrf=result.csrf_token||state.csrf;state.authEmail=result.user.email||state.authEmail;
  state.capabilities=result.capabilities||{};state.settings={...state.settings,...(result.settings||{})};state.error='';
  const generation=accountGeneration,destination=state.screen==='auth'?state.afterLogin:state.screen;
- state.afterLogin='home';await navigate(destination);
+ state.afterLogin='home';await navigate(destination);await openPushNotification();
  if(generation!==accountGeneration)return;
  toast(mode==='register'?'가입했어요. 반가워요!':'로그인했어요.');
  try{

@@ -55,3 +55,17 @@ def test_api_auth_csrf_subscription_and_logout(tmp_path):
     connection = storage.connect(app.config['DATABASE'])
     assert connection.execute('SELECT count(*) FROM push_subscriptions').fetchone()[0] == 0
     connection.close()
+
+def test_notification_detail_is_recipient_only(tmp_path):
+    from webapp import create_app
+    app=create_app({'TESTING':True,'DATABASE':str(tmp_path/'detail.db'),'DATA_DIR':str(tmp_path),'PHOTO_DIR':str(tmp_path/'photos'),'SECRET_KEY':'test','SESSION_COOKIE_SECURE':False})
+    owner=app.test_client(); other=app.test_client()
+    a=owner.post('/api/auth/register',json={'email':'owner@example.test','password':'synthetic-password','nickname':'owner'}).json['user']['id']
+    b=other.post('/api/auth/register',json={'email':'other@example.test','password':'synthetic-password','nickname':'other'}).json['user']['id']
+    db=storage.connect(app.config['DATABASE'])
+    with db:
+        db.execute('INSERT INTO notifications VALUES(?,?,?,?,?,?,?)',('a'*32,None,b,a,'arrival','도착했어요.','now'))
+    db.close()
+    assert owner.get('/api/notifications/'+'a'*32).json['notification']['kind']=='arrival'
+    assert other.get('/api/notifications/'+'a'*32).status_code==404
+    assert app.test_client().get('/api/notifications/'+'a'*32).status_code==401

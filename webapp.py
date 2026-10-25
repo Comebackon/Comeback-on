@@ -191,9 +191,9 @@ def create_app(test_config=None):
         if request.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         if response.status_code < 400:
-            for recipient in set(g.pop('push_recipients', [])):
+            for recipient, notification_id in set(g.pop('push_recipients', [])):
                 try:
-                    push_service.send(db(), recipient, push_service.keys(db())['private_key'])
+                    push_service.send(db(), recipient, push_service.keys(db())['private_key'], notification_id)
                 except Exception:
                     app.logger.warning("Web push attempt failed; in-app notification retained")
         return response
@@ -471,9 +471,10 @@ def create_app(test_config=None):
             return {"in_app": "disabled", "recipients": 0,
                     "sms": {"status": "unavailable", "message": "문자 전송 서비스가 연결되지 않았어요."}}
         recipients = db().execute("SELECT g.recipient_id FROM trip_guardians tg JOIN guardians g ON tg.guardian_id=g.id WHERE tg.trip_id=? AND g.status='accepted' AND g.sender_id=?", (row["id"], row["user_id"])).fetchall()
-        g.push_recipients = getattr(g, 'push_recipients', []) + [r[0] for r in recipients]
         for recipient in recipients:
-            db().execute("INSERT INTO notifications VALUES(?,?,?,?,?,?,?)", (uuid4().hex, row["id"], row["user_id"], recipient[0], kind, message, storage.utcnow()))
+            notification_id = uuid4().hex
+            g.push_recipients = getattr(g, 'push_recipients', []) + [(recipient[0], notification_id)]
+            db().execute("INSERT INTO notifications VALUES(?,?,?,?,?,?,?)", (notification_id, row["id"], row["user_id"], recipient[0], kind, message, storage.utcnow()))
         return {"in_app": "recorded" if recipients else "no_recipients", "recipients": len(recipients),
                 "sms": {"status": "unavailable", "message": "문자 전송 서비스가 연결되지 않았어요. 필요하면 문자 앱에서 직접 보내 주세요."}}
 
@@ -598,9 +599,10 @@ def create_app(test_config=None):
             # 명시적인 SOS 요청은 현재 연결된 보호자에게 전달한다. 귀가 시작 후 연결된
             # 보호자에게도 도움을 요청하지만 trip_guardians를 추가하거나 위치를 공개하지 않는다.
             targets = db().execute("SELECT DISTINCT recipient_id FROM guardians WHERE sender_id=? AND status='accepted'", (uid,)).fetchall()
-            g.push_recipients = getattr(g, 'push_recipients', []) + [r[0] for r in targets]
             for target in targets:
-                db().execute("INSERT INTO notifications VALUES(?,?,?,?,?,?,?)", (uuid4().hex, active["id"] if active else None, uid, target[0], "sos", message, storage.utcnow()))
+                notification_id = uuid4().hex
+                g.push_recipients = getattr(g, 'push_recipients', []) + [(target[0], notification_id)]
+                db().execute("INSERT INTO notifications VALUES(?,?,?,?,?,?,?)", (notification_id, active["id"] if active else None, uid, target[0], "sos", message, storage.utcnow()))
             notice = {"in_app": "recorded" if targets else "no_recipients", "recipients": len(targets),
                       "sms": {"status": "unavailable", "message": "문자 전송 서비스가 연결되지 않았어요. 필요하면 문자 앱에서 직접 보내 주세요."}}
         return jsonify(notification=notice, location_shared=bool(active and active["share_location"]))
@@ -648,6 +650,14 @@ def create_app(test_config=None):
         throttle('push-test', 3, 60)
         accepted = push_service.send(db(), current_user()['id'], push_service.keys(db())['private_key'])
         return jsonify(accepted=accepted)
+
+    @app.get('/api/notifications/<notification_id>')
+    @signed_in
+    def notification_detail(notification_id):
+        row = db().execute('SELECT n.*,u.nickname AS sender_name FROM notifications n JOIN users u ON u.id=n.sender_id WHERE n.id=? AND n.recipient_id=?', (notification_id, current_user()['id'])).fetchone()
+        if row is None:
+            raise APIError('이 알림을 찾을 수 없어요. 알림을 받은 계정인지 확인해 주세요.', 404)
+        return jsonify(notification=dict(row))
 
     @app.get("/api/notifications")
     @signed_in
