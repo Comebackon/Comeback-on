@@ -115,20 +115,26 @@ def _poi_address(poi):
     return " ".join(str(poi.get(field) or "").strip() for field in ("upperAddrName", "middleAddrName", "lowerAddrName", "detailAddrName")).strip()[:250]
 
 
-def search_places(query):
-    """사용자가 검색을 제출했을 때 TMAP 장소 검색. 최대 5개, 캐시 10분."""
+def search_places(query, lat=None, lon=None):
+    """현재 좌표가 있으면 가까운 순, 없으면 정확도순. 최대 5개, 캐시 10분."""
     if not isinstance(query, str) or not 1 <= len(query.strip()) <= 100:
         raise RoutingError("검색어를 1~100자로 입력해 주세요.")
     query = ALIASES.get(re.sub(r"\s+", "", query), query.strip())
+    origin = _coord(lat, lon) if lat is not None or lon is not None else None
+    cache_key = (query, origin)
     key = get_app_key()
     if not key:
         raise RoutingError("TMap 키가 필요해요. 맥에서는 setup-tmap.command를 열어 등록하고, 배포 서버에서는 TMAP_APP_KEY를 설정해 주세요.")
     now = time.monotonic()
     with _search_lock:
-        cached = _search_cache.get(query)
+        cached = _search_cache.get(cache_key)
         if cached and cached[0] > now:
             return [dict(item) for item in cached[1]]
-    request = Request(SEARCH_URL + "?" + urlencode({"version": "1", "searchKeyword": query, "searchType": "all", "count": "5", "page": "1", "resCoordType": "WGS84GEO"}), headers={"appKey": key, "Accept": "application/json", "User-Agent": "Comeback-on/1.0"})
+    params = {"version": "1", "searchKeyword": query, "searchType": "all", "count": "5", "page": "1", "resCoordType": "WGS84GEO"}
+    if origin is not None:
+        # 제공자가 먼저 거리순으로 후보를 고르게 한다. 전국 검색을 유지한다.
+        params.update(searchtypCd="R", radius="0", centerLat=origin[0], centerLon=origin[1], reqCoordType="WGS84GEO", count="20")
+    request = Request(SEARCH_URL + "?" + urlencode(params), headers={"appKey": key, "Accept": "application/json", "User-Agent": "Comeback-on/1.0"})
     try:
         with urlopen(request, timeout=10) as response:
             raw = json.loads(response.read(1024 * 1024))
@@ -156,8 +162,11 @@ def search_places(query):
             if coordinate is None:
                 continue
             lat, lon = coordinate
-            result.append({"name": str(poi.get("name") or query)[:150], "address": _poi_address(poi), "lat": lat, "lon": lon})
-            if len(result) == 5:
+            place = {"name": str(poi.get("name") or query)[:150], "address": _poi_address(poi), "lat": lat, "lon": lon}
+            if origin is not None:
+                place["distance_m"] = distance_m(origin, coordinate)
+            result.append(place)
+            if origin is None and len(result) == 5:
                 break
         if pois and not result:
             raise RoutingError("검색 결과는 있지만 사용할 수 있는 위치 좌표가 없어요. 다른 장소명이나 도로명주소로 검색해 주세요.")
@@ -165,11 +174,14 @@ def search_places(query):
         raise
     except (ValueError, KeyError, TypeError, AttributeError):
         raise RoutingError("TMap 장소 검색 응답 형식이 올바르지 않아요. 잠시 후 다시 시도해 주세요.") from None
+    if origin is not None:
+        result.sort(key=lambda place: place["distance_m"])
+        result = result[:5]
     with _search_lock:
         # Bound process memory; TMAP responses are never cached beyond 24 hours.
         if len(_search_cache) >= 256:
             _search_cache.clear()
-        _search_cache[query] = (now + 600, result)
+        _search_cache[cache_key] = (now + 600, result)
     return [dict(item) for item in result]
 
 

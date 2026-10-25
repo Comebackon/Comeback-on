@@ -2,6 +2,7 @@
 import io
 import json
 from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -77,4 +78,94 @@ def test_network_failure_does_not_expose_raw_error_or_claim_invalid_key(monkeypa
     with pytest.raises(routing.RoutingError, match="인터넷 연결") as error:
         routing.search_places("학교")
     assert "synthetic-search-key" not in str(error.value)
+
+
+def test_nearby_search_requests_distance_order_and_sorts_before_limiting(monkeypatch):
+    requests = []
+    payload = pois(*[
+        {"name": f"카페 {index}", "pnsLat": 37.5 + index * .001, "pnsLon": 127}
+        for index in range(7, 0, -1)
+    ])
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        return io.BytesIO(json.dumps(payload).encode())
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    result = routing.search_places("카페", lat=37.5, lon=127)
+
+    assert [item["name"] for item in result] == [f"카페 {index}" for index in range(1, 6)]
+    assert [item["distance_m"] for item in result] == sorted(item["distance_m"] for item in result)
+    assert result[0]["distance_m"] == pytest.approx(111.2, abs=1)
+    params = parse_qs(urlsplit(requests[0].full_url).query)
+    assert params["searchKeyword"] == ["카페"]
+    assert params["searchtypCd"] == ["R"]
+    assert params["radius"] == ["0"]
+    assert float(params["centerLat"][0]) == 37.5
+    assert float(params["centerLon"][0]) == 127
+    assert params["reqCoordType"] == ["WGS84GEO"]
+    assert params["resCoordType"] == ["WGS84GEO"]
+    assert params["count"] == ["20"]
+
+
+def test_search_without_location_preserves_provider_relevance_order(monkeypatch):
+    requests = []
+    payload = pois(*[
+        {"name": f"카페 {index}", "noorLat": 37.5 + index * .001, "noorLon": 127}
+        for index in range(7, 0, -1)
+    ])
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        return io.BytesIO(json.dumps(payload).encode())
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    result = routing.search_places("카페")
+
+    assert [item["name"] for item in result] == [f"카페 {index}" for index in range(7, 2, -1)]
+    assert all("distance_m" not in item for item in result)
+    params = parse_qs(urlsplit(requests[0].full_url).query)
+    assert params.get("searchtypCd", ["A"]) == ["A"]
+    assert "centerLat" not in params and "centerLon" not in params
+
+
+def test_search_cache_keeps_origins_and_relevance_results_separate(monkeypatch):
+    requests = []
+    payload = pois(
+        {"name": "남쪽 카페", "noorLat": 37.5, "noorLon": 127},
+        {"name": "북쪽 카페", "noorLat": 37.6, "noorLon": 127},
+    )
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        return io.BytesIO(json.dumps(payload).encode())
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    south = routing.search_places("카페", lat=37.5, lon=127)
+    north = routing.search_places("카페", lat=37.6, lon=127)
+    relevance = routing.search_places("카페")
+
+    assert south[0]["name"] == "남쪽 카페"
+    assert north[0]["name"] == "북쪽 카페"
+    assert south[0]["distance_m"] == north[0]["distance_m"] == 0
+    assert all("distance_m" not in item for item in relevance)
+    assert routing.search_places("카페", lat=37.5, lon=127) == south
+    assert routing.search_places("카페", lat=37.6, lon=127) == north
+    assert routing.search_places("카페") == relevance
+    assert len(requests) == 3
+
+
+@pytest.mark.parametrize("lat,lon", [
+    (37.5, None), (None, 127), ("", 127), ("not-a-number", 127),
+    (float("nan"), 127), (37.5, float("inf")), (91, 127),
+    (37.5, 181), (True, 127), (37.5, False),
+])
+def test_invalid_search_origin_is_rejected_before_provider(monkeypatch, lat, lon):
+    def unexpected_call(*args, **kwargs):
+        pytest.fail("Invalid coordinates must not reach TMap")
+
+    monkeypatch.setattr(routing, "urlopen", unexpected_call)
+    with pytest.raises(routing.RoutingError):
+        routing.search_places("카페", lat=lat, lon=lon)
+    assert not routing._search_cache
 

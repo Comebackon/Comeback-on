@@ -1,6 +1,7 @@
 """서버 기본 기능/입력 검증. 외부 위치·문자 서비스는 호출하지 않는다."""
 
 import io
+import json
 import sqlite3
 import sys
 from types import SimpleNamespace
@@ -244,3 +245,48 @@ def test_routing_adapters_keep_guest_access_and_public_errors(app, monkeypatch):
     response = client.post("/api/routes", json={"invalid": True})
     assert response.status_code == 400
     assert response.json["error"] == "실제 경로를 찾을 수 없어요."
+
+
+def test_search_endpoint_uses_current_position_and_reports_sort_mode(app, monkeypatch):
+    import routing
+
+    routing._search_cache.clear()
+    monkeypatch.setattr(routing, "get_app_key", lambda: "synthetic-search-key")
+    payload = {"searchPoiInfo": {"totalCount": "2", "pois": {"poi": [
+        {"name": "멀리 있는 카페", "noorLat": "37.6", "noorLon": "127"},
+        {"name": "가까운 카페", "noorLat": "37.501", "noorLon": "127"},
+    ]}}}
+    monkeypatch.setattr(routing, "urlopen", lambda *args, **kwargs: io.BytesIO(json.dumps(payload).encode()))
+    try:
+        client = app.test_client()
+        nearby = client.get("/api/search", query_string={"q": "카페", "lat": 37.5, "lon": 127})
+        assert nearby.status_code == 200
+        assert nearby.json["sort"] == "distance"
+        assert [place["name"] for place in nearby.json["places"]] == ["가까운 카페", "멀리 있는 카페"]
+        assert nearby.json["places"][0]["distance_m"] == pytest.approx(111.2, abs=1)
+
+        regular = client.get("/api/search", query_string={"q": "카페"})
+        assert regular.status_code == 200
+        assert regular.json["sort"] == "relevance"
+        assert regular.json["places"][0]["name"] == "멀리 있는 카페"
+        assert all("distance_m" not in place for place in regular.json["places"])
+    finally:
+        routing._search_cache.clear()
+
+
+@pytest.mark.parametrize("origin", [
+    {"lat": "37.5"}, {"lon": "127"}, {"lat": "", "lon": "127"},
+    {"lat": "nan", "lon": "127"}, {"lat": "37.5", "lon": "inf"},
+    {"lat": "91", "lon": "127"}, {"lat": "37.5", "lon": "181"},
+])
+def test_search_endpoint_rejects_incomplete_or_invalid_position(app, monkeypatch, origin):
+    import routing
+
+    def unexpected_call(*args, **kwargs):
+        pytest.fail("Invalid search position must not reach TMap")
+
+    monkeypatch.setattr(routing, "get_app_key", lambda: "synthetic-search-key")
+    monkeypatch.setattr(routing, "urlopen", unexpected_call)
+    result = app.test_client().get("/api/search", query_string={"q": "카페", **origin})
+    assert result.status_code == 400
+    assert result.json["error"]

@@ -693,7 +693,11 @@ def create_app(test_config=None):
         import routing
         throttle("search", 30, 60)
         try:
-            return jsonify(places=routing.search_places(request.args.get("q", "")))
+            query = request.args.get("q", "")
+            if "lat" in request.args or "lon" in request.args:
+                lat, lon = coordinates(request.args)
+                return jsonify(places=routing.search_places(query, lat=lat, lon=lon), sort="distance")
+            return jsonify(places=routing.search_places(query), sort="relevance")
         except ValueError as error:
             raise APIError(str(error), 400)
 
