@@ -76,12 +76,14 @@ def utcnow():
 
 
 def account_storage_ready(database_path, data_dir):
-    """Render에서는 실제로 연결된 디스크 안에 계정 데이터를 보관해야 한다.
+    """Render에서는 외부 PostgreSQL 또는 실제 연결된 디스크에 계정을 보관한다.
 
     디렉터리 생성이나 환경 변수 지정만으로는 영구 저장소가 생기지 않는다.
     기본 디스크 경로는 /var/data이고, 다른 경로를 쓰면 명시적으로 지정한다.
     로컬 개발의 SQLite 파일은 기존 경로를 그대로 사용한다.
     """
+    if is_postgres(database_path):
+        return True
     if not os.environ.get("RENDER"):
         return True
     mount = Path(os.environ.get("COMEBACK_PERSISTENT_MOUNT", "/var/data")).resolve()
@@ -94,7 +96,61 @@ def account_storage_ready(database_path, data_dir):
     )
 
 
+def is_postgres(value):
+    return str(value).startswith(("postgresql://", "postgres://"))
+
+
+class DatabaseRow(dict):
+    def __getitem__(self, key):
+        return tuple(self.values())[key] if isinstance(key, int) else super().__getitem__(key)
+
+
+class PostgresConnection:
+    def __init__(self, url):
+        import psycopg
+        from psycopg.rows import dict_row
+        self.connection = psycopg.connect(url, autocommit=True, row_factory=dict_row,
+                                         connect_timeout=10, sslmode="require", prepare_threshold=None)
+        self.connection.execute("SET search_path TO comeback_private")
+        self.transactions = []
+
+    def execute(self, query, parameters=()):
+        import psycopg
+        try:
+            cursor = self.connection.execute(query.replace("?", "%s"), parameters)
+        except psycopg.IntegrityError as error:
+            raise sqlite3.IntegrityError("Database constraint violation") from error
+        return PostgresCursor(cursor)
+
+    def __enter__(self):
+        transaction = self.connection.transaction()
+        transaction.__enter__()
+        self.transactions.append(transaction)
+        return self
+
+    def __exit__(self, *args):
+        return self.transactions.pop().__exit__(*args)
+
+    def close(self):
+        self.connection.close()
+
+
+class PostgresCursor:
+    def __init__(self, cursor):
+        self.cursor = cursor
+        self.rowcount = cursor.rowcount
+
+    def fetchone(self):
+        row = self.cursor.fetchone()
+        return DatabaseRow(row) if row is not None else None
+
+    def fetchall(self):
+        return [DatabaseRow(row) for row in self.cursor.fetchall()]
+
+
 def connect(path):
+    if is_postgres(path):
+        return PostgresConnection(path)
     db = sqlite3.connect(path, timeout=10)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
@@ -102,9 +158,20 @@ def connect(path):
 
 
 def initialize(path):
-    with connect(path) as db:
-        db.executescript(SCHEMA)
-        db.execute("PRAGMA journal_mode = WAL")
+    db = connect(path)
+    try:
+        with db:
+            if is_postgres(path):
+                db.execute("CREATE SCHEMA IF NOT EXISTS comeback_private")
+                db.execute("REVOKE ALL ON SCHEMA comeback_private FROM PUBLIC")
+                for statement in SCHEMA.replace("PRAGMA foreign_keys = ON;", "").replace(" REAL", " DOUBLE PRECISION").split(";"):
+                    if statement.strip():
+                        db.execute(statement)
+            else:
+                db.executescript(SCHEMA)
+                db.execute("PRAGMA journal_mode = WAL")
+    finally:
+        db.close()
 
 
 def settings_for(row):

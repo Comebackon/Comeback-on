@@ -65,7 +65,7 @@ def create_app(test_config=None):
     directory.mkdir(parents=True, exist_ok=True)
     app.config.update(
         SECRET_KEY=_secret(directory),
-        DATABASE=str(directory / "comeback.sqlite3"),
+        DATABASE=os.environ.get("DATABASE_URL", "").strip() or str(directory / "comeback.sqlite3"),
         DATA_DIR=str(directory),
         PHOTO_DIR=str(directory / "report_photos"),
         MAX_CONTENT_LENGTH=4 * 1024 * 1024,
