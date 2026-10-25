@@ -1,8 +1,10 @@
 """귀가ON 데이터 저장: 계정/연결/최신 공유 위치만 보관하며 이동 궤적은 저장하지 않는다."""
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -71,6 +73,25 @@ DEFAULT_SETTINGS = {
 
 def utcnow():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def account_storage_ready(database_path, data_dir):
+    """Render에서는 실제로 연결된 디스크 안에 계정 데이터를 보관해야 한다.
+
+    디렉터리 생성이나 환경 변수 지정만으로는 영구 저장소가 생기지 않는다.
+    기본 디스크 경로는 /var/data이고, 다른 경로를 쓰면 명시적으로 지정한다.
+    로컬 개발의 SQLite 파일은 기존 경로를 그대로 사용한다.
+    """
+    if not os.environ.get("RENDER"):
+        return True
+    mount = Path(os.environ.get("COMEBACK_PERSISTENT_MOUNT", "/var/data")).resolve()
+    return (
+        mount != Path(mount.anchor)
+        and mount.is_dir()
+        and os.path.ismount(mount)
+        and Path(database_path).resolve().is_relative_to(mount)
+        and Path(data_dir).resolve().is_relative_to(mount)
+    )
 
 
 def connect(path):

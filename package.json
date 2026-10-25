@@ -3,6 +3,6 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "test": "python -m pytest -q && node --test tests/test_place_search_ui.cjs"
+    "test": "python -m pytest -q && node --test tests/test_place_search_ui.cjs tests/test_auth_ui.cjs"
   }
 }

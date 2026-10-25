@@ -81,6 +81,12 @@ def create_app(test_config=None):
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=0, x_proto=1, x_host=0)
     Path(app.config["PHOTO_DIR"]).mkdir(parents=True, exist_ok=True)
     storage.initialize(app.config["DATABASE"])
+    account_storage_ready = storage.account_storage_ready(app.config["DATABASE"], app.config["DATA_DIR"])
+    if not account_storage_ready:
+        app.logger.warning(
+            "Email authentication is unavailable: Render account storage is not on a persistent disk. "
+            "Attach a disk at /var/data and set COMEBACK_DATA_DIR=/var/data/comeback-on."
+        )
     attempts = defaultdict(deque)
 
     def db():
@@ -155,6 +161,8 @@ def create_app(test_config=None):
     def validate_request():
         if not request.path.startswith("/api/"):
             return
+        if request.method == "POST" and request.path in {"/api/auth/login", "/api/auth/register"} and not account_storage_ready:
+            raise APIError("계정 저장소를 준비하고 있어요. 잠시 후 다시 이용해 주세요.", 503)
         if request.method in {"POST", "PATCH", "PUT", "DELETE"}:
             origin = request.headers.get("Origin")
             allowed = {request.host_url.rstrip("/")}
@@ -207,7 +215,8 @@ def create_app(test_config=None):
     def capabilities():
         graph = os.environ.get("ROUTING_GRAPH_FILE", "")
         return {
-            "email_login": True, "phone_login": False,
+            "email_login": account_storage_ready, "phone_login": False,
+            "account_storage_ready": account_storage_ready,
             "social_login": {"kakao": False, "naver": False, "apple": False},
             "sms": False, "road_graph": bool(graph and Path(graph).is_file()),
             "tmap": bool(get_app_key()),
