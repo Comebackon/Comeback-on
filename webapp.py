@@ -691,7 +691,7 @@ def create_app(test_config=None):
     @app.get("/api/search")
     def search():
         import routing
-        throttle("search", 30, 60)
+        throttle("search", 60, 60)
         try:
             query = request.args.get("q", "")
             if "lat" in request.args or "lon" in request.args:

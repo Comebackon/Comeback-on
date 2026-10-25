@@ -84,7 +84,7 @@ def test_nearby_search_requests_distance_order_and_sorts_before_limiting(monkeyp
     requests = []
     payload = pois(*[
         {"name": f"카페 {index}", "pnsLat": 37.5 + index * .001, "pnsLon": 127}
-        for index in range(7, 0, -1)
+        for index in range(25, 0, -1)
     ])
 
     def provider(request, **kwargs):
@@ -94,7 +94,7 @@ def test_nearby_search_requests_distance_order_and_sorts_before_limiting(monkeyp
     monkeypatch.setattr(routing, "urlopen", provider)
     result = routing.search_places("카페", lat=37.5, lon=127)
 
-    assert [item["name"] for item in result] == [f"카페 {index}" for index in range(1, 6)]
+    assert [item["name"] for item in result] == [f"카페 {index}" for index in range(1, 21)]
     assert [item["distance_m"] for item in result] == sorted(item["distance_m"] for item in result)
     assert result[0]["distance_m"] == pytest.approx(111.2, abs=1)
     params = parse_qs(urlsplit(requests[0].full_url).query)
@@ -112,7 +112,7 @@ def test_search_without_location_preserves_provider_relevance_order(monkeypatch)
     requests = []
     payload = pois(*[
         {"name": f"카페 {index}", "noorLat": 37.5 + index * .001, "noorLon": 127}
-        for index in range(7, 0, -1)
+        for index in range(25, 0, -1)
     ])
 
     def provider(request, **kwargs):
@@ -122,11 +122,12 @@ def test_search_without_location_preserves_provider_relevance_order(monkeypatch)
     monkeypatch.setattr(routing, "urlopen", provider)
     result = routing.search_places("카페")
 
-    assert [item["name"] for item in result] == [f"카페 {index}" for index in range(7, 2, -1)]
+    assert [item["name"] for item in result] == [f"카페 {index}" for index in range(25, 5, -1)]
     assert all("distance_m" not in item for item in result)
     params = parse_qs(urlsplit(requests[0].full_url).query)
     assert params.get("searchtypCd", ["A"]) == ["A"]
     assert "centerLat" not in params and "centerLon" not in params
+    assert params["count"] == ["20"]
 
 
 def test_search_cache_keeps_origins_and_relevance_results_separate(monkeypatch):
@@ -230,19 +231,27 @@ def test_hangul_and_space_keyword_is_utf8_encoded_once(monkeypatch):
     assert "%25EC" not in encoded_query
 
 
-@pytest.mark.parametrize("query", ["미림마이", "미림마이스", "미림마이스터고등학교", " 미림 마이 ", "미림마고", "미림마이스터고"])
-def test_known_school_prefix_searches_full_name_without_extra_request(monkeypatch, query):
+@pytest.mark.parametrize("query,name", [
+    ("엽기", "동대문엽기떡볶이"), ("스타", "스타벅스"),
+    ("미림마이", "미림마이스터고등학교"), (" 미림 마이 ", "미림마이스터고등학교"),
+])
+def test_partial_keyword_keeps_raw_query_and_all_provider_matches(monkeypatch, query, name):
     requests = []
+    matches = [
+        {"name": f"{name} {index} 지점", "pnsLat": 37.5 + index * .001, "pnsLon": 127}
+        for index in range(1, 9)
+    ]
 
     def provider(request, **kwargs):
         requests.append(request)
-        return io.BytesIO(json.dumps(pois({"name": "미림마이스터고등학교", "pnsLat": 37.466, "pnsLon": 126.932})).encode())
+        return io.BytesIO(json.dumps(pois(*matches)).encode())
 
     monkeypatch.setattr(routing, "urlopen", provider)
     result = routing.search_places(query)
-    assert result[0]["name"] == "미림마이스터고등학교"
+    assert [place["name"] for place in result] == [place["name"] for place in matches]
+    assert routing.search_places(query) == result
     assert len(requests) == 1
-    assert parse_qs(urlsplit(requests[0].full_url).query)["searchKeyword"] == ["미림마이스터고등학교"]
+    assert parse_qs(urlsplit(requests[0].full_url).query)["searchKeyword"] == [query.strip()]
 
 
 @pytest.mark.parametrize("query", ["미림", "미림고등학교", "미림마이 카페"])
@@ -261,7 +270,7 @@ def test_ambiguous_or_unrelated_queries_are_not_rewritten(monkeypatch, query):
 
 @pytest.mark.parametrize("empty_status", [200, 204])
 @pytest.mark.parametrize("origin", [{}, {"lat": 37.5, "lon": 127}])
-def test_school_search_tries_former_name_only_after_no_results_and_caches_aliases(monkeypatch, empty_status, origin):
+def test_school_search_tries_known_names_only_after_raw_query_has_no_results(monkeypatch, empty_status, origin):
     requests = []
     payload = pois(
         {"name": "학교 후문", "pnsLat": 37.47, "pnsLon": 126.93},
@@ -270,7 +279,7 @@ def test_school_search_tries_former_name_only_after_no_results_and_caches_aliase
 
     def provider(request, **kwargs):
         requests.append(request)
-        if len(requests) == 1:
+        if len(requests) <= 2:
             result = io.BytesIO(b"" if empty_status == 204 else json.dumps(pois()).encode())
             result.status = empty_status
             return result
@@ -278,10 +287,10 @@ def test_school_search_tries_former_name_only_after_no_results_and_caches_aliase
 
     monkeypatch.setattr(routing, "urlopen", provider)
     result = routing.search_places("미림마이", **origin)
-    assert len(requests) == 2
+    assert len(requests) == 3
     params = [parse_qs(urlsplit(request.full_url).query) for request in requests]
-    assert [p.pop("searchKeyword") for p in params] == [["미림마이스터고등학교"], ["미림여자정보과학고등학교"]]
-    assert params[0] == params[1]
+    assert [p.pop("searchKeyword") for p in params] == [["미림마이"], ["미림마이스터고등학교"], ["미림여자정보과학고등학교"]]
+    assert params[0] == params[1] == params[2]
     assert all(request.get_header("Appkey") == "synthetic-search-key" for request in requests)
     assert {(p["lat"], p["lon"]) for p in result} == {(37.47, 126.93), (37.49, 126.99)}
     if origin:
@@ -292,9 +301,9 @@ def test_school_search_tries_former_name_only_after_no_results_and_caches_aliase
         assert float(params[1]["centerLon"][0]) == origin["lon"]
     else:
         assert all("distance_m" not in p for p in result)
+    assert routing.search_places("미림마이", **origin) == result
     assert routing.search_places("미림마이스터고등학교", **origin) == result
-    assert routing.search_places("미림마고", **origin) == result
-    assert len(requests) == 2
+    assert len(requests) == 3
 
 
 @pytest.mark.parametrize("failure", ["auth", "network", "malformed", "invalid_schema", "invalid_coordinates"])
@@ -319,7 +328,7 @@ def test_school_search_does_not_hide_provider_errors_with_fallback(monkeypatch, 
     assert not routing._search_cache
 
 
-def test_school_search_stops_after_both_names_have_no_results(monkeypatch):
+def test_school_search_stops_after_raw_current_and_former_names_have_no_results(monkeypatch):
     requests = []
 
     def provider(request, **kwargs):
@@ -328,6 +337,53 @@ def test_school_search_stops_after_both_names_have_no_results(monkeypatch):
 
     monkeypatch.setattr(routing, "urlopen", provider)
     assert routing.search_places("미림마이") == []
+    assert routing.search_places("미림마이") == []
     assert routing.search_places("미림마이스터고등학교") == []
+    assert len(requests) == 3
+
+
+def test_school_search_stops_when_current_name_matches(monkeypatch):
+    requests = []
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        payload = pois() if len(requests) == 1 else pois({"name": "미림마이스터고등학교", "pnsLat": 37.466, "pnsLon": 126.932})
+        return io.BytesIO(json.dumps(payload).encode())
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    assert routing.search_places("미림마이")[0]["name"] == "미림마이스터고등학교"
+    assert [parse_qs(urlsplit(request.full_url).query)["searchKeyword"][0] for request in requests] == ["미림마이", "미림마이스터고등학교"]
+
+
+def test_partial_query_cache_does_not_replace_full_query_matches(monkeypatch):
+    requests = []
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        query = parse_qs(urlsplit(request.full_url).query)["searchKeyword"][0]
+        names = ["미림마이스터고등학교 정문", "미림마이스터고등학교 후문"] if query == "미림마이" else ["미림마이스터고등학교"]
+        return io.BytesIO(json.dumps(pois(*[{"name": name, "pnsLat": 37.466, "pnsLon": 126.932} for name in names])).encode())
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    short = routing.search_places("미림마이")
+    full = routing.search_places("미림마이스터고등학교")
+    assert len(short) == 2 and len(full) == 1
+    assert routing.search_places("미림마이") == short
+    assert routing.search_places("미림마이스터고등학교") == full
+    assert len(requests) == 2
+
+
+def test_error_during_current_name_fallback_does_not_try_former_name(monkeypatch):
+    requests = []
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        if len(requests) == 1:
+            return io.BytesIO(json.dumps(pois()).encode())
+        raise HTTPError(request.full_url, 401, "Unauthorized", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    with pytest.raises(routing.RoutingError):
+        routing.search_places("미림마이")
     assert len(requests) == 2
 

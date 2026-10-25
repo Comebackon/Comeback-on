@@ -41,6 +41,7 @@ from tmap_client import TmapAPIError, get_app_key, request_pedestrian_route
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 SEARCH_URL = "https://apis.openapi.sk.com/tmap/pois"
+SEARCH_RESULT_LIMIT = 20
 MAX_ROUTE_DISTANCE_M = 30000
 MAX_GRAPH_EDGES = 50000
 MAX_SNAP_M = 30
@@ -120,16 +121,22 @@ def _poi_address(poi):
 
 
 def search_places(query, lat=None, lon=None):
-    """현재 좌표가 있으면 가까운 순, 없으면 정확도순. 최대 5개, 캐시 10분."""
+    """현재 좌표가 있으면 가까운 순, 없으면 정확도순. 최대 20개, 캐시 10분."""
     if not isinstance(query, str) or not 1 <= len(query.strip()) <= 100:
         raise RoutingError("검색어를 1~100자로 입력해 주세요.")
-    compact = re.sub(r"\s+", "", query)
-    # '미림마이'부터 완성된 이름까지 인식하되 '미림'처럼 넓은 검색은 보존한다.
-    query = MIRIM_SCHOOL_NAME if len(compact) >= 4 and MIRIM_SCHOOL_NAME.startswith(compact) else ALIASES.get(compact, query.strip())
+    query = query.strip()
+    # 모든 검색어를 우선 그대로 전달해 관련 장소·지점들을 함께 찾는다.
     result = _search_places_once(query, lat, lon)
-    if not result and query in SEARCH_FALLBACKS:
-        # 정상적인 결과 없음일 때만 한 번 재검색한다. 인증·통신 오류는 전파한다.
-        result = _search_places_once(SEARCH_FALLBACKS[query], lat, lon)
+    if result:
+        return result
+    compact = re.sub(r"\s+", "", query)
+    # 확인된 별칭은 원문 결과가 없을 때만 보조로 쓴다. 원문 결과를 좁히지 않는다.
+    alias = MIRIM_SCHOOL_NAME if len(compact) >= 4 and MIRIM_SCHOOL_NAME.startswith(compact) else ALIASES.get(compact)
+    if alias and alias != query:
+        result = _search_places_once(alias, lat, lon)
+    if not result and alias in SEARCH_FALLBACKS:
+        # 정상적인 결과 없음일 때만 재검색한다. 인증·통신 오류는 전파한다.
+        result = _search_places_once(SEARCH_FALLBACKS[alias], lat, lon)
     return result
 
 
@@ -145,10 +152,10 @@ def _search_places_once(query, lat=None, lon=None):
         cached = _search_cache.get(cache_key)
         if cached and cached[0] > now:
             return [dict(item) for item in cached[1]]
-    params = {"version": "1", "searchKeyword": query, "searchType": "all", "count": "5", "page": "1", "resCoordType": "WGS84GEO"}
+    params = {"version": "1", "searchKeyword": query, "searchType": "all", "count": str(SEARCH_RESULT_LIMIT), "page": "1", "resCoordType": "WGS84GEO"}
     if origin is not None:
         # 제공자가 먼저 거리순으로 후보를 고르게 한다. 전국 검색을 유지한다.
-        params.update(searchtypCd="R", radius="0", centerLat=origin[0], centerLon=origin[1], reqCoordType="WGS84GEO", count="20")
+        params.update(searchtypCd="R", radius="0", centerLat=origin[0], centerLon=origin[1], reqCoordType="WGS84GEO")
     request = Request(SEARCH_URL + "?" + urlencode(params), headers={"appKey": key, "Accept": "application/json", "User-Agent": "Comeback-on/1.0"})
     try:
         with urlopen(request, timeout=10) as response:
@@ -186,7 +193,7 @@ def _search_places_once(query, lat=None, lon=None):
             if origin is not None:
                 place["distance_m"] = distance_m(origin, coordinate)
             result.append(place)
-            if origin is None and len(result) == 5:
+            if origin is None and len(result) == SEARCH_RESULT_LIMIT:
                 break
         if pois and not result:
             raise RoutingError("검색 결과는 있지만 사용할 수 있는 위치 좌표가 없어요. 다른 장소명이나 도로명주소로 검색해 주세요.")
@@ -196,7 +203,7 @@ def _search_places_once(query, lat=None, lon=None):
         raise RoutingError("TMap 장소 검색 응답 형식이 올바르지 않아요. 잠시 후 다시 시도해 주세요.") from None
     if origin is not None:
         result.sort(key=lambda place: place["distance_m"])
-        result = result[:5]
+        result = result[:SEARCH_RESULT_LIMIT]
     with _search_lock:
         # Bound process memory; TMAP responses are never cached beyond 24 hours.
         if len(_search_cache) >= 256:
