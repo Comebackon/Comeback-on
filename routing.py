@@ -44,7 +44,11 @@ SEARCH_URL = "https://apis.openapi.sk.com/tmap/pois"
 MAX_ROUTE_DISTANCE_M = 30000
 MAX_GRAPH_EDGES = 50000
 MAX_SNAP_M = 30
-ALIASES = {"미림마이스터고": "미림마이스터고등학교", "미림마이스터": "미림마이스터고등학교", "미림마고": "미림마이스터고등학교"}
+MIRIM_SCHOOL_NAME = "미림마이스터고등학교"
+ALIASES = {"미림마고": MIRIM_SCHOOL_NAME}
+# 교육청의 교명 변경 기록으로 확인한 이전 이름. 좌표는 TMAP 결과만 쓴다.
+# https://www.sen.go.kr/user/bbs/BD_selectBbs.do?q_bbsDocNo=20260903221548557&q_bbsSn=1158
+SEARCH_FALLBACKS = {MIRIM_SCHOOL_NAME: "미림여자정보과학고등학교"}
 _search_cache = {}
 _search_lock = threading.Lock()
 
@@ -119,7 +123,18 @@ def search_places(query, lat=None, lon=None):
     """현재 좌표가 있으면 가까운 순, 없으면 정확도순. 최대 5개, 캐시 10분."""
     if not isinstance(query, str) or not 1 <= len(query.strip()) <= 100:
         raise RoutingError("검색어를 1~100자로 입력해 주세요.")
-    query = ALIASES.get(re.sub(r"\s+", "", query), query.strip())
+    compact = re.sub(r"\s+", "", query)
+    # '미림마이'부터 완성된 이름까지 인식하되 '미림'처럼 넓은 검색은 보존한다.
+    query = MIRIM_SCHOOL_NAME if len(compact) >= 4 and MIRIM_SCHOOL_NAME.startswith(compact) else ALIASES.get(compact, query.strip())
+    result = _search_places_once(query, lat, lon)
+    if not result and query in SEARCH_FALLBACKS:
+        # 정상적인 결과 없음일 때만 한 번 재검색한다. 인증·통신 오류는 전파한다.
+        result = _search_places_once(SEARCH_FALLBACKS[query], lat, lon)
+    return result
+
+
+def _search_places_once(query, lat=None, lon=None):
+    """한 검색어의 실제 제공자 응답을 위치별로 캐시한다."""
     origin = _coord(lat, lon) if lat is not None or lon is not None else None
     cache_key = (query, origin)
     key = get_app_key()

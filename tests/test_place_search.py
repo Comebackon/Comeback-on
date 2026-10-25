@@ -229,3 +229,105 @@ def test_hangul_and_space_keyword_is_utf8_encoded_once(monkeypatch):
     assert "%EC%84%9C%EC%9A%B8%EC%97%AD" in encoded_query
     assert "%25EC" not in encoded_query
 
+
+@pytest.mark.parametrize("query", ["미림마이", "미림마이스", "미림마이스터고등학교", " 미림 마이 ", "미림마고", "미림마이스터고"])
+def test_known_school_prefix_searches_full_name_without_extra_request(monkeypatch, query):
+    requests = []
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        return io.BytesIO(json.dumps(pois({"name": "미림마이스터고등학교", "pnsLat": 37.466, "pnsLon": 126.932})).encode())
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    result = routing.search_places(query)
+    assert result[0]["name"] == "미림마이스터고등학교"
+    assert len(requests) == 1
+    assert parse_qs(urlsplit(requests[0].full_url).query)["searchKeyword"] == ["미림마이스터고등학교"]
+
+
+@pytest.mark.parametrize("query", ["미림", "미림고등학교", "미림마이 카페"])
+def test_ambiguous_or_unrelated_queries_are_not_rewritten(monkeypatch, query):
+    requests = []
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        return io.BytesIO(json.dumps(pois()).encode())
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    assert routing.search_places(query) == []
+    assert len(requests) == 1
+    assert parse_qs(urlsplit(requests[0].full_url).query)["searchKeyword"] == [query]
+
+
+@pytest.mark.parametrize("empty_status", [200, 204])
+@pytest.mark.parametrize("origin", [{}, {"lat": 37.5, "lon": 127}])
+def test_school_search_tries_former_name_only_after_no_results_and_caches_aliases(monkeypatch, empty_status, origin):
+    requests = []
+    payload = pois(
+        {"name": "학교 후문", "pnsLat": 37.47, "pnsLon": 126.93},
+        {"name": "미림여자정보과학고등학교", "pnsLat": 37.49, "pnsLon": 126.99},
+    )
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        if len(requests) == 1:
+            result = io.BytesIO(b"" if empty_status == 204 else json.dumps(pois()).encode())
+            result.status = empty_status
+            return result
+        return io.BytesIO(json.dumps(payload).encode())
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    result = routing.search_places("미림마이", **origin)
+    assert len(requests) == 2
+    params = [parse_qs(urlsplit(request.full_url).query) for request in requests]
+    assert [p.pop("searchKeyword") for p in params] == [["미림마이스터고등학교"], ["미림여자정보과학고등학교"]]
+    assert params[0] == params[1]
+    assert all(request.get_header("Appkey") == "synthetic-search-key" for request in requests)
+    assert {(p["lat"], p["lon"]) for p in result} == {(37.47, 126.93), (37.49, 126.99)}
+    if origin:
+        assert result[0]["name"] == "미림여자정보과학고등학교"
+        assert result[0]["distance_m"] < result[1]["distance_m"]
+        assert params[1]["searchtypCd"] == ["R"]
+        assert float(params[1]["centerLat"][0]) == origin["lat"]
+        assert float(params[1]["centerLon"][0]) == origin["lon"]
+    else:
+        assert all("distance_m" not in p for p in result)
+    assert routing.search_places("미림마이스터고등학교", **origin) == result
+    assert routing.search_places("미림마고", **origin) == result
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize("failure", ["auth", "network", "malformed", "invalid_schema", "invalid_coordinates"])
+def test_school_search_does_not_hide_provider_errors_with_fallback(monkeypatch, failure):
+    requests = []
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        if failure == "auth":
+            raise HTTPError(request.full_url, 401, "Unauthorized", {}, io.BytesIO(b""))
+        if failure == "network":
+            raise URLError("Unavailable")
+        if failure == "malformed":
+            return io.BytesIO(b"not-json")
+        payload = {} if failure == "invalid_schema" else pois({"name": "학교", "pnsLat": 0, "pnsLon": 0})
+        return io.BytesIO(json.dumps(payload).encode())
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    with pytest.raises(routing.RoutingError):
+        routing.search_places("미림마이")
+    assert len(requests) == 1
+    assert not routing._search_cache
+
+
+def test_school_search_stops_after_both_names_have_no_results(monkeypatch):
+    requests = []
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        return io.BytesIO(json.dumps(pois()).encode())
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    assert routing.search_places("미림마이") == []
+    assert routing.search_places("미림마이스터고등학교") == []
+    assert len(requests) == 2
+
