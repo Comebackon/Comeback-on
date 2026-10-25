@@ -1,0 +1,8 @@
+{
+  "name": "comeback-on",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "test": "python -m pytest -q"
+  }
+}

@@ -3,3 +3,6 @@ folium>=0.15
 streamlit-folium>=0.20
 pandas>=2.0
 geopy>=2.4
+Flask>=3.1,<4
+gunicorn>=23,<24
+Pillow>=11,<13

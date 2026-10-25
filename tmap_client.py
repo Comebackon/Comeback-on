@@ -16,8 +16,12 @@ class TmapAPIError(Exception):
 
 
 def request_pedestrian_route(start_lon, start_lat, end_lon, end_lat,
-                             start_name="출발지", end_name="목적지"):
+                             start_name="출발지", end_name="목적지", search_option="0"):
     """보행자 경로 GeoJSON 응답을 반환한다. 지도 표시나 안전 분석은 수행하지 않는다."""
+    # TMAP 공식 보행자 옵션: 0 추천, 10 최단, 30 최단거리+계단제외.
+    # 기존 호출은 0을 유지하며 모바일 앱에서 명시적으로 10/30을 선택한다.
+    if str(search_option) not in {"0", "4", "10", "30"}:
+        raise TmapAPIError("지원하지 않는 보행자 경로 옵션입니다.")
     app_key = os.environ.get("TMAP_APP_KEY", "").strip()
     if not app_key:
         raise TmapAPIError("TMAP_APP_KEY 환경 변수가 설정되지 않았습니다.")
@@ -31,7 +35,7 @@ def request_pedestrian_route(start_lon, start_lat, end_lon, end_lat,
         "endName": end_name,
         "reqCoordType": "WGS84GEO",
         "resCoordType": "WGS84GEO",
-        "searchOption": "0",
+        "searchOption": str(search_option),
     }
     request = Request(
         TMAP_PEDESTRIAN_URL,

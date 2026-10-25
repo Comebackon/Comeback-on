@@ -8,3 +8,11 @@ output_map.html
 .streamlit/
 README.md
 data/README.md
+.venv/
+.env
+.env.*
+instance/
+*.sqlite*
+.pytest_cache/
+node_modules/
+tests/

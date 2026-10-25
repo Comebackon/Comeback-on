@@ -3,3 +3,13 @@ __pycache__/
 *.pyc
 output_map.html
 .streamlit/
+.venv/
+.env
+.env.*
+!.env.example
+instance/
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+.pytest_cache/
+node_modules/
