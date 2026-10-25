@@ -80,6 +80,41 @@ def _provider_error():
     return RoutingError("장소·경로 서비스에 연결하지 못했어요. 잠시 후 다시 시도해 주세요. 계속되면 서버의 TMAP 키와 상품 등록 상태를 확인해 주세요.")
 
 
+def _search_http_error(status):
+    # 인증 응답 원문에는 키 등이 포함될 수 있어 공개하지 않는다.
+    if status in (401, 403):
+        return RoutingError(f"TMap이 장소 검색 요청을 허용하지 않았어요 (HTTP {status}). 등록한 앱 키와 TMap 콘솔의 장소 검색 상품·접근 설정을 확인해 주세요.")
+    if status == 429:
+        return RoutingError("TMap 장소 검색 사용량 또는 요청 횟수 제한에 도달했어요 (HTTP 429). 잠시 후 다시 시도하고 콘솔의 사용량을 확인해 주세요.")
+    if 500 <= status <= 599:
+        return RoutingError(f"TMap 장소 검색 서버에 오류가 있어요 (HTTP {status}). 잠시 후 다시 시도해 주세요.")
+    return RoutingError(f"TMap이 장소 검색 요청에 오류를 반환했어요 (HTTP {status}). 검색어와 서비스 설정을 확인해 주세요.")
+
+
+def _poi_coordinates(poi):
+    # '0'은 참으로 평가되는 문자열이지만 실제 위치로 사용할 수 없다.
+    # 서로 다른 출처의 위도와 경도를 섞지 않고, 유효한 좌표 쌍을 선택한다.
+    for lat_key, lon_key in (("pnsLat", "pnsLon"), ("noorLat", "noorLon"), ("frontLat", "frontLon")):
+        try:
+            lat, lon = _coord(poi.get(lat_key), poi.get(lon_key))
+        except RoutingError:
+            continue
+        if 32 <= lat <= 39 and 123 <= lon <= 133:
+            return lat, lon
+    return None
+
+
+def _poi_address(poi):
+    addresses = poi.get("newAddressList")
+    rows = addresses.get("newAddress") if isinstance(addresses, dict) else None
+    if isinstance(rows, list):
+        for row in rows:
+            road = row.get("fullAddressRoad") if isinstance(row, dict) else None
+            if isinstance(road, str) and road.strip():
+                return road.strip()[:250]
+    return " ".join(str(poi.get(field) or "").strip() for field in ("upperAddrName", "middleAddrName", "lowerAddrName", "detailAddrName")).strip()[:250]
+
+
 def search_places(query):
     """사용자가 검색을 제출했을 때 TMAP 장소 검색. 최대 5개, 캐시 10분."""
     if not isinstance(query, str) or not 1 <= len(query.strip()) <= 100:
@@ -97,27 +132,39 @@ def search_places(query):
     try:
         with urlopen(request, timeout=10) as response:
             raw = json.loads(response.read(1024 * 1024))
-        pois = raw.get("searchPoiInfo", {}).get("pois", {}).get("poi", [])
+    except HTTPError as error:
+        raise _search_http_error(error.code) from None
+    except (TimeoutError, URLError, OSError):
+        raise RoutingError("TMap 장소 검색 서버에 연결하지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.") from None
+    except (ValueError, UnicodeError):
+        raise RoutingError("TMap 장소 검색 응답을 읽지 못했어요. 잠시 후 다시 시도해 주세요.") from None
+    try:
+        info = raw.get("searchPoiInfo") if isinstance(raw, dict) else None
+        if not isinstance(info, dict):
+            raise ValueError
+        container = info.get("pois")
+        pois = container.get("poi") if isinstance(container, dict) else None
+        if pois is None and str(info.get("totalCount")) == "0":
+            pois = []
         if not isinstance(pois, list):
             raise ValueError
         result = []
-        for poi in pois[:5]:
-            # 보행자 입구 좌표를 우선하고 없으면 대표점 좌표를 사용한다.
-            lat = poi.get("pnsLat") or poi.get("noorLat") or poi.get("frontLat")
-            lon = poi.get("pnsLon") or poi.get("noorLon") or poi.get("frontLon")
-            try:
-                lat, lon = _coord(lat, lon)
-            except RoutingError:
+        for poi in pois:
+            if not isinstance(poi, dict):
                 continue
-            if not (32 <= lat <= 39 and 123 <= lon <= 133):
+            coordinate = _poi_coordinates(poi)
+            if coordinate is None:
                 continue
-            new_addresses = poi.get("newAddressList", {}).get("newAddress", [])
-            address = (new_addresses[0].get("fullAddressRoad", "") if new_addresses else "")
-            if not address:
-                address = " ".join(str(poi.get(field) or "") for field in ("upperAddrName", "middleAddrName", "lowerAddrName", "detailAddrName")).strip()
-            result.append({"name": str(poi.get("name") or query)[:150], "address": str(address)[:250], "lat": lat, "lon": lon})
-    except (HTTPError, URLError, TimeoutError, OSError, ValueError, KeyError, TypeError, AttributeError):
-        raise _provider_error() from None
+            lat, lon = coordinate
+            result.append({"name": str(poi.get("name") or query)[:150], "address": _poi_address(poi), "lat": lat, "lon": lon})
+            if len(result) == 5:
+                break
+        if pois and not result:
+            raise RoutingError("검색 결과는 있지만 사용할 수 있는 위치 좌표가 없어요. 다른 장소명이나 도로명주소로 검색해 주세요.")
+    except RoutingError:
+        raise
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise RoutingError("TMap 장소 검색 응답 형식이 올바르지 않아요. 잠시 후 다시 시도해 주세요.") from None
     with _search_lock:
         # Bound process memory; TMAP responses are never cached beyond 24 hours.
         if len(_search_cache) >= 256:
