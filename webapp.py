@@ -73,7 +73,8 @@ def create_app(test_config=None):
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=os.environ.get("COMEBACK_COOKIE_SECURE", os.environ.get("COOKIE_SECURE", "0")) == "1",
-        PERMANENT_SESSION_LIFETIME=timedelta(days=7),
+        PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+        SESSION_REFRESH_EACH_REQUEST=False,
     )
     if test_config:
         app.config.update(test_config)
@@ -82,6 +83,8 @@ def create_app(test_config=None):
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=0, x_proto=1, x_host=0)
     Path(app.config["PHOTO_DIR"]).mkdir(parents=True, exist_ok=True)
     storage.initialize(app.config["DATABASE"])
+    if not os.environ.get('COMEBACK_SECRET_KEY', '').strip() and not (test_config and test_config.get('SECRET_KEY')):
+        app.config['SECRET_KEY'] = storage.session_signing_key(app.config['DATABASE'], app.config['SECRET_KEY'])
     account_storage_ready = storage.account_storage_ready(app.config["DATABASE"], app.config["DATA_DIR"])
     if not account_storage_ready:
         app.logger.warning(
@@ -251,15 +254,15 @@ def create_app(test_config=None):
     def health():
         return jsonify(status="ok")
 
-    def authenticate(row):
+    def authenticate(row, remember=True):
         sid = secrets.token_urlsafe(32)
         with db():
             db().execute("DELETE FROM sessions WHERE expires_at<=?", (int(time.time()),))
-            db().execute("INSERT INTO sessions VALUES(?,?,?)", (hashlib.sha256(sid.encode()).hexdigest(), row["id"], int(time.time()) + 7 * 86400))
+            db().execute("INSERT INTO sessions VALUES(?,?,?)", (hashlib.sha256(sid.encode()).hexdigest(), row["id"], int(time.time()) + (30 * 86400 if remember else 12 * 3600)))
         session.clear()
         session["user_id"] = row["id"]
         session["sid"] = sid
-        session.permanent = True
+        session.permanent = remember
         g.user = row
         return jsonify(session_view())
 
@@ -280,7 +283,7 @@ def create_app(test_config=None):
         with db():
             db().execute("INSERT INTO users(id,email,nickname,password_hash,created_at) VALUES(?,?,?,?,?)",
                          (uid, email, nickname, generate_password_hash(password), storage.utcnow()))
-        return authenticate(db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()), 201
+        return authenticate(db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone(), data.get("remember", True) is True), 201
 
     @app.post("/api/auth/login")
     def login():
@@ -293,7 +296,7 @@ def create_app(test_config=None):
         row = db().execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
         if row is None or not check_password_hash(row["password_hash"], password):
             raise APIError("이메일 또는 비밀번호를 확인해 주세요.", 401)
-        return authenticate(row)
+        return authenticate(row, data.get("remember", True) is True)
 
     @app.post("/api/auth/logout")
     @signed_in

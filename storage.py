@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS users (
  id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, nickname TEXT NOT NULL,
  password_hash TEXT NOT NULL, settings TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_secrets (
+ name TEXT PRIMARY KEY, value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS push_keys (
  id INTEGER PRIMARY KEY, private_key TEXT NOT NULL, public_key TEXT NOT NULL
 );
@@ -192,3 +195,13 @@ def user_view(row):
     if not row:
         return None
     return {key: row[key] for key in ("id", "email", "nickname")}
+
+
+def session_signing_key(path, initial):
+    db = connect(path)
+    try:
+        with db:
+            db.execute("INSERT INTO app_secrets(name,value) VALUES('session',?) ON CONFLICT(name) DO NOTHING", (initial,))
+        return db.execute("SELECT value FROM app_secrets WHERE name='session'").fetchone()[0]
+    finally:
+        db.close()
