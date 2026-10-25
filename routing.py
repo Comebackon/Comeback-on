@@ -137,7 +137,12 @@ def search_places(query, lat=None, lon=None):
     request = Request(SEARCH_URL + "?" + urlencode(params), headers={"appKey": key, "Accept": "application/json", "User-Agent": "Comeback-on/1.0"})
     try:
         with urlopen(request, timeout=10) as response:
-            raw = json.loads(response.read(1024 * 1024))
+            # TMAP은 검색 결과가 없으면 본문 없는 HTTP 204를 반환한다.
+            # https://tmap-skopenapi.readme.io/reference/error-code-3
+            if getattr(response, "status", None) == 204:
+                raw = {"searchPoiInfo": {"totalCount": "0", "pois": None}}
+            else:
+                raw = json.loads(response.read(1024 * 1024))
     except HTTPError as error:
         raise _search_http_error(error.code) from None
     except (TimeoutError, URLError, OSError):

@@ -169,3 +169,63 @@ def test_invalid_search_origin_is_rejected_before_provider(monkeypatch, lat, lon
         routing.search_places("카페", lat=lat, lon=lon)
     assert not routing._search_cache
 
+
+@pytest.mark.parametrize("origin", [{}, {"lat": 37.5, "lon": 127}])
+def test_http_204_empty_body_means_no_search_results(monkeypatch, origin):
+    def provider(*args, **kwargs):
+        result = io.BytesIO(b"")
+        result.status = 204
+        return result
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    assert routing.search_places("없는장소", **origin) == []
+
+
+def test_no_content_cache_is_separate_for_each_origin_and_regular_search(monkeypatch):
+    requests = []
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        result = io.BytesIO(b"")
+        result.status = 204
+        return result
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    origins = [{}, {"lat": 37.5, "lon": 127}, {"lat": 37.6, "lon": 127}]
+    for origin in origins:
+        assert routing.search_places("없는장소", **origin) == []
+    for origin in origins:
+        assert routing.search_places("없는장소", **origin) == []
+    assert len(requests) == 3
+
+
+@pytest.mark.parametrize("body", [b"", b" \n", b"<html>synthetic-search-key</html>", b'{"incomplete":', b"\xff"])
+def test_http_200_empty_or_malformed_body_still_errors_and_is_not_cached(monkeypatch, body):
+    def provider(*args, **kwargs):
+        result = io.BytesIO(body)
+        result.status = 200
+        return result
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    with pytest.raises(routing.RoutingError) as error:
+        routing.search_places("학교")
+    assert "응답" in str(error.value)
+    assert "synthetic-search-key" not in str(error.value)
+    assert not routing._search_cache
+
+
+def test_hangul_and_space_keyword_is_utf8_encoded_once(monkeypatch):
+    requests = []
+    query = "서울역 1번 출구"
+
+    def provider(request, **kwargs):
+        requests.append(request)
+        return io.BytesIO(json.dumps(pois()).encode())
+
+    monkeypatch.setattr(routing, "urlopen", provider)
+    assert routing.search_places(query) == []
+    encoded_query = urlsplit(requests[0].full_url).query
+    assert parse_qs(encoded_query)["searchKeyword"] == [query]
+    assert "%EC%84%9C%EC%9A%B8%EC%97%AD" in encoded_query
+    assert "%25EC" not in encoded_query
+
