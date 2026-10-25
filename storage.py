@@ -12,6 +12,13 @@ CREATE TABLE IF NOT EXISTS users (
  id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, nickname TEXT NOT NULL,
  password_hash TEXT NOT NULL, settings TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS push_keys (
+ id INTEGER PRIMARY KEY, private_key TEXT NOT NULL, public_key TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+ endpoint TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ subscription TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sessions (
  token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
  expires_at INTEGER NOT NULL

@@ -7,6 +7,7 @@ import math
 import os
 import re
 import secrets
+import push_service
 import sqlite3
 import tempfile
 import time
@@ -189,6 +190,12 @@ def create_app(test_config=None):
         response.headers["Permissions-Policy"] = "geolocation=(self), camera=(), microphone=()"
         if request.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
+        if response.status_code < 400:
+            for recipient in set(g.pop('push_recipients', [])):
+                try:
+                    push_service.send(db(), recipient, push_service.keys(db())['private_key'])
+                except Exception:
+                    app.logger.warning("Web push attempt failed; in-app notification retained")
         return response
 
     @app.errorhandler(APIError)
@@ -215,7 +222,7 @@ def create_app(test_config=None):
     def capabilities():
         graph = os.environ.get("ROUTING_GRAPH_FILE", "")
         return {
-            "email_login": account_storage_ready, "phone_login": False,
+            "web_push": account_storage_ready, "email_login": account_storage_ready, "phone_login": False,
             "account_storage_ready": account_storage_ready,
             "social_login": {"kakao": False, "naver": False, "apple": False},
             "sms": False, "road_graph": bool(graph and Path(graph).is_file()),
@@ -295,6 +302,8 @@ def create_app(test_config=None):
         with db():
             db().execute("UPDATE trips SET share_location=0,lat=NULL,lon=NULL,location_updated_at=NULL WHERE user_id=? AND status='active'", (current_user()["id"],))
             db().execute("DELETE FROM sessions WHERE token_hash=?", (hashlib.sha256(session["sid"].encode()).hexdigest(),))
+        with db():
+            db().execute('DELETE FROM push_subscriptions WHERE user_id=?', (current_user()['id'],))
         session.clear()
         g.user = None
         return jsonify(session_view())
@@ -343,6 +352,8 @@ def create_app(test_config=None):
             db().execute("UPDATE trips SET share_location=0,lat=NULL,lon=NULL,location_updated_at=NULL WHERE status='active' AND share_location=1 AND NOT EXISTS (SELECT 1 FROM trip_guardians WHERE trip_id=trips.id)")
         for name in names:
             (Path(app.config["PHOTO_DIR"]) / name[0]).unlink(missing_ok=True)
+        with db():
+            db().execute('DELETE FROM push_subscriptions WHERE user_id=?', (current_user()['id'],))
         session.clear()
         g.user = None
         return jsonify(deleted=True, csrf_token=csrf_token())
@@ -460,6 +471,7 @@ def create_app(test_config=None):
             return {"in_app": "disabled", "recipients": 0,
                     "sms": {"status": "unavailable", "message": "문자 전송 서비스가 연결되지 않았어요."}}
         recipients = db().execute("SELECT g.recipient_id FROM trip_guardians tg JOIN guardians g ON tg.guardian_id=g.id WHERE tg.trip_id=? AND g.status='accepted' AND g.sender_id=?", (row["id"], row["user_id"])).fetchall()
+        g.push_recipients = getattr(g, 'push_recipients', []) + [r[0] for r in recipients]
         for recipient in recipients:
             db().execute("INSERT INTO notifications VALUES(?,?,?,?,?,?,?)", (uuid4().hex, row["id"], row["user_id"], recipient[0], kind, message, storage.utcnow()))
         return {"in_app": "recorded" if recipients else "no_recipients", "recipients": len(recipients),
@@ -586,6 +598,7 @@ def create_app(test_config=None):
             # 명시적인 SOS 요청은 현재 연결된 보호자에게 전달한다. 귀가 시작 후 연결된
             # 보호자에게도 도움을 요청하지만 trip_guardians를 추가하거나 위치를 공개하지 않는다.
             targets = db().execute("SELECT DISTINCT recipient_id FROM guardians WHERE sender_id=? AND status='accepted'", (uid,)).fetchall()
+            g.push_recipients = getattr(g, 'push_recipients', []) + [r[0] for r in targets]
             for target in targets:
                 db().execute("INSERT INTO notifications VALUES(?,?,?,?,?,?,?)", (uuid4().hex, active["id"] if active else None, uid, target[0], "sos", message, storage.utcnow()))
             notice = {"in_app": "recorded" if targets else "no_recipients", "recipients": len(targets),
@@ -597,6 +610,44 @@ def create_app(test_config=None):
     def guardian_trips():
         rows = db().execute("SELECT DISTINCT t.* FROM trips t JOIN trip_guardians tg ON tg.trip_id=t.id JOIN guardians g ON g.id=tg.guardian_id WHERE g.recipient_id=? AND g.status='accepted' AND g.sender_id=t.user_id AND t.status='active' AND t.share_location=1 ORDER BY t.started_at DESC", (current_user()["id"],)).fetchall()
         return jsonify(trips=[trip_view(row, guardian=True) for row in rows])
+
+    @app.get('/api/push/key')
+    @signed_in
+    def push_key():
+        return jsonify(public_key=push_service.keys(db())['public_key'])
+
+    @app.post('/api/push/subscription')
+    @signed_in
+    def push_subscribe():
+        throttle('push-subscribe', 20, 60)
+        try:
+            subscription = push_service.validate(body())
+        except ValueError as error:
+            raise APIError(str(error))
+        uid = current_user()['id']
+        endpoint = subscription['endpoint']
+        with db():
+            existing = db().execute('SELECT user_id FROM push_subscriptions WHERE endpoint=?', (endpoint,)).fetchone()
+            if not existing and db().execute('SELECT count(*) FROM push_subscriptions WHERE user_id=?', (uid,)).fetchone()[0] >= 5:
+                raise APIError('알림 기기는 최대 5대까지 등록할 수 있어요.')
+            db().execute('INSERT INTO push_subscriptions VALUES(?,?,?) ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id,subscription=excluded.subscription', (endpoint, uid, json.dumps(subscription)))
+        session['push_endpoint'] = endpoint
+        return jsonify(subscribed=True)
+
+    @app.delete('/api/push/subscription')
+    @signed_in
+    def push_unsubscribe():
+        with db():
+            db().execute('DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?', (body().get('endpoint', ''), current_user()['id']))
+        session.pop('push_endpoint', None)
+        return jsonify(subscribed=False)
+
+    @app.post('/api/push/test')
+    @signed_in
+    def push_test():
+        throttle('push-test', 3, 60)
+        accepted = push_service.send(db(), current_user()['id'], push_service.keys(db())['private_key'])
+        return jsonify(accepted=accepted)
 
     @app.get("/api/notifications")
     @signed_in
