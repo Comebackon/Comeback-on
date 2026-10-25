@@ -8,6 +8,8 @@ output_map.html
 .env.*
 !.env.example
 instance/
+tmap_app_key
+.tmap-key-*
 *.sqlite
 *.sqlite3
 *.sqlite3-*

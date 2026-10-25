@@ -70,8 +70,8 @@ class RouteTests(unittest.TestCase):
                 feature("a", "b", [[127, 37], [127.001, 37]]),
                 feature("b", "c", [[127.002, 37], [127.003, 37]])))
 
-    @patch.dict(os.environ, {"TMAP_APP_KEY": ""})
-    def test_no_key_is_explicit_not_demo_route(self):
+    @patch("routing.get_app_key", return_value="")
+    def test_no_key_is_explicit_not_demo_route(self, key):
         with self.assertRaisesRegex(routing.RoutingError, "TMAP_APP_KEY"):
             routing.compare_routes(self.payload())
 

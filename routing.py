@@ -36,7 +36,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
-from tmap_client import TmapAPIError, request_pedestrian_route
+from tmap_client import TmapAPIError, get_app_key, request_pedestrian_route
 
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -85,9 +85,9 @@ def search_places(query):
     if not isinstance(query, str) or not 1 <= len(query.strip()) <= 100:
         raise RoutingError("검색어를 1~100자로 입력해 주세요.")
     query = ALIASES.get(re.sub(r"\s+", "", query), query.strip())
-    key = os.environ.get("TMAP_APP_KEY", "").strip()
+    key = get_app_key()
     if not key:
-        raise RoutingError("장소 검색 연결 준비 중이에요. 서버에 TMAP_APP_KEY를 등록하면 검색할 수 있어요.")
+        raise RoutingError("TMap 키가 필요해요. 맥에서는 setup-tmap.command를 열어 등록하고, 배포 서버에서는 TMAP_APP_KEY를 설정해 주세요.")
     now = time.monotonic()
     with _search_lock:
         cached = _search_cache.get(query)
@@ -463,8 +463,8 @@ def compare_routes(payload):
     avoid_stairs = payload.get("avoid_stairs", False)
     if not isinstance(avoid_stairs, bool):
         raise RoutingError("계단 피하기 설정을 확인해 주세요.")
-    if not os.environ.get("TMAP_APP_KEY", "").strip():
-        raise RoutingError("경로 안내 연결 준비 중이에요. 서버에 TMAP_APP_KEY를 등록하면 실제 보행 경로를 찾을 수 있어요.")
+    if not get_app_key():
+        raise RoutingError("TMap 키가 필요해요. 맥에서는 setup-tmap.command를 열어 등록하고, 배포 서버에서는 TMAP_APP_KEY를 설정해 주세요.")
     try:
         raw = request_pedestrian_route(start[1], start[0], end[1], end[0], str(payload["start"].get("name") or "출발지")[:100], str(payload["end"].get("name") or "목적지")[:100], search_option="30" if avoid_stairs else "10")
         base = _tmap_route(raw)

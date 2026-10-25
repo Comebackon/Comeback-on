@@ -23,6 +23,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import storage
+from tmap_client import get_app_key
 
 ROOT = Path(__file__).resolve().parent
 EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -209,7 +210,7 @@ def create_app(test_config=None):
             "email_login": True, "phone_login": False,
             "social_login": {"kakao": False, "naver": False, "apple": False},
             "sms": False, "road_graph": bool(graph and Path(graph).is_file()),
-            "tmap": bool(os.environ.get("TMAP_APP_KEY", "").strip()),
+            "tmap": bool(get_app_key()),
             "report_photos": True,
             "background_location": False,
             "automatic_alerts": False,
