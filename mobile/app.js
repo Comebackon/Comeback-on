@@ -327,13 +327,29 @@ function notificationFeedback(n,lead){
  if(n?.sms?.status==='unavailable')return `${lead} ${n.in_app==='recorded'?'보호자가 앱을 열면 확인할 수 있어요. ':''}문자는 발송되지 않았어요.`;
  return lead;
 }
-async function requestSos(){if(!state.user){state.afterLogin='sos';await navigate('auth');return;}openDialog('보호자에게 SOS 요청','<div id="sos-count" class="sos-count">3</div><p class="dialog-message center">3초 후 앱 안에 도움 요청을 등록해요.<br>'+(state.capabilities.sms?'번호를 등록한 보호자에게는 문자도 보내요.':'문자는 발송되지 않아요.')+'</p>','<button class="btn soft" data-action="dialog-close">전송 취소</button>');countdownCanceled=false;let count=3;countdownId=setInterval(async()=>{count--;const el=$('#sos-count');if(el)el.textContent=String(Math.max(count,0));if(count<=0){clearInterval(countdownId);countdownId=null;if(countdownCanceled)return;$('#dialog').close();try{const r=await api('/api/sos','POST',{message:'도움이 필요해요. 귀가 중인 사람에게 연락해 주세요.'});openDialog('도움 요청 처리 결과',`<p class="dialog-message">${esc(r.notification?.in_app==='no_recipients'?'연결된 보호자가 없어 요청을 전달하지 못했어요. 긴급한 경우 112 전화·문자를 이용해 주세요.':notificationFeedback(r.notification,'앱 안에 도움 요청을 등록했어요.'))}</p>`,'<button class="btn primary" data-action="dialog-close">확인</button>');}catch(e){toast(e.message);}}},1000);}
+async function sendSos(){
+ const note=String($('#sos-note')?.value||'').trim();
+ if(countdownId!==null){clearInterval(countdownId);countdownId=null;}
+ $('#dialog').close();
+ try{
+  const r=await api('/api/sos','POST',{message:'도움이 필요해요. 귀가 중인 사람에게 연락해 주세요.',note});
+  openDialog('도움 요청 처리 결과',`<p class="dialog-message">${esc(r.notification?.in_app==='no_recipients'?'연결된 보호자가 없어 요청을 전달하지 못했어요. 긴급한 경우 112 전화·문자를 이용해 주세요.':notificationFeedback(r.notification,'앱 안에 도움 요청을 등록했어요.'))}</p>`,'<button class="btn primary" data-action="dialog-close">확인</button>');
+ }catch(e){toast(e.message);}
+}
+async function requestSos(){
+ if(!state.user){state.afterLogin='sos';await navigate('auth');return;}
+ openDialog('보호자에게 SOS 요청',`<div id="sos-count" class="sos-count">3</div><p id="sos-hint" class="dialog-message center">3초 후 앱 안에 도움 요청을 등록해요.<br>${state.capabilities.sms?'번호를 등록한 보호자에게는 문자도 보내요.':'문자는 발송되지 않아요.'}</p><label class="field mt-sm">전하고 싶은 말 (선택)<textarea id="sos-note" maxlength="100" rows="2" placeholder="예: 어두운 골목에서 누가 따라와요"></textarea></label><p class="caption">적으면 보호자에게 함께 가요. 쓰는 동안은 자동으로 보내지 않아요.</p>`,'<button class="btn soft" data-action="dialog-close">전송 취소</button><button class="btn danger" data-action="sos-send">지금 보내기</button>');
+ countdownCanceled=false;let count=3;
+ countdownId=setInterval(()=>{count--;const el=$('#sos-count');if(el)el.textContent=String(Math.max(count,0));if(count<=0){clearInterval(countdownId);countdownId=null;if(countdownCanceled)return;sendSos();}},1000);
+}
+document.addEventListener('input',event=>{if(event.target?.id!=='sos-note'||countdownId===null)return;clearInterval(countdownId);countdownId=null;const c=$('#sos-count');if(c)c.textContent='✍';const h=$('#sos-hint');if(h)h.innerHTML='다 쓰면 <strong>지금 보내기</strong>를 눌러 주세요.';});
 function showReport(id){const r=state.reports.find(x=>String(x.id)===String(id));if(!r)return;openDialog(r.title||r.type,`<div class="row between mb"><span class="tag ${r.status==='pending'?'yellow':'green'}">${reportStatus(r.status)}</span><small class="muted">${fmtDate(r.created_at)}</small></div><p class="report-copy">${esc(r.content)}</p>${r.photo_url&&String(r.photo_url).startsWith('/api/')?`<img src="${esc(r.photo_url)}" class="report-photo" alt="제보자가 첨부한 현장 사진">`:''}<p class="subtle mt">${icon('pin')}${esc(r.address||`${r.lat}, ${r.lon}`)}</p><div class="status-step"><span class="active">접수</span><span class="${['reviewing','reviewed','reflected','resolved'].includes(r.status)?'active':''}">검토</span><span class="${['reflected','resolved'].includes(r.status)?'active':''}">반영</span></div><div class="mt">${notice('확인 수는 다른 사용자의 확인 참여 수예요. 사실 여부를 확정하는 수치는 아니에요.')}</div>`,`<button class="btn ${r.confirmed_by_me?'yellow':'primary'}" data-action="confirm-report" data-id="${esc(r.id)}">${icon('check')}${r.confirmed_by_me?'확인 취소':'저도 확인했어요'} · ${r.confirmation_count||0}</button>`);}
 document.addEventListener('click',async event=>{const button=event.target.closest('[data-action]');if(!button||button.disabled)return;const action=button.dataset.action;try{
  if(action==='nav')return await navigate(button.dataset.screen);
  if(action==='dialog-close'){closeDialog();return;}
  if(action==='login-gate'){state.afterLogin=button.dataset.screen;return await navigate('auth');}
  if(['phone-send','phone-verify','phone-reset'].includes(action)){await phoneAction(action);return;}
+ if(action==='sos-send'){await sendSos();return;}
  if(action==='avatar-pick'){$('#avatar-input')?.click();return;}
  if(action==='avatar-delete'){const r=await api('/api/profile/photo','DELETE');state.user=r.user;render();toast('프로필 사진을 삭제했어요.');return;}
  if(action==='nickname-edit'){openDialog('닉네임 변경',`<form id="profile-form"><label class="field">닉네임<input name="nickname" maxlength="10" autocomplete="nickname" value="${esc(state.user?.nickname||'')}" required></label><p class="caption mb">10자 이내로 입력해 주세요. 연결된 보호자에게도 이 이름이 보여요.</p><button class="btn primary w-full">저장</button></form>`);return;}

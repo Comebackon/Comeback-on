@@ -666,7 +666,24 @@ def create_app(test_config=None):
             base = "https://comeback-on.kr"
         return f"{base}/n/{notification_id[:12]}"
 
-    def deliver_sms(sender_id, notifications, kind):
+    def clean_note(raw):
+        """SOS에 선택으로 덧붙이는 한마디. 줄바꿈·제어문자를 없애고 100자, 링크 금지."""
+        if raw is None or raw == "":
+            return ""
+        if not isinstance(raw, str):
+            raise APIError("남길 말을 확인해 주세요.")
+        note = re.sub(r"[\x00-\x1f\x7f]+", " ", raw)
+        note = re.sub(r"\s+", " ", note).strip()
+        if len(note) > 100:
+            raise APIError("남길 말은 100자 이내로 적어 주세요.")
+        if re.search(r"https?://|www\.", note, re.I):
+            raise APIError("남길 말에는 링크를 넣을 수 없어요.")
+        return note
+
+    def with_note(message, note):
+        return f"{message} 남긴 말: {note}" if note else message
+
+    def deliver_sms(sender_id, notifications, kind, note=""):
         """앱 푸시를 먼저 시도하고, 푸시가 가지 않은 보호자에게만 문자를 요청한다.
 
         SOS는 긴급 상황이라 푸시 결과와 상관없이 문자도 보낸다. 위치·목적지는 문자에 넣지 않는다.
@@ -706,6 +723,9 @@ def create_app(test_config=None):
         person = db().execute("SELECT nickname FROM users WHERE id=?", (sender_id,)).fetchone()
         template = SMS_TEMPLATES.get(kind, "{name}님의 새 알림이 있어요.")
         message = "[귀가ON] " + template.format(name=person["nickname"] if person else "보호 대상")
+        if kind == "sos" and note:
+            # 직접 적은 말이 있을 때만 문자가 길어진다(긴 문자 요금). 없으면 짧은 문자 그대로다.
+            message += "\n남긴 말: " + note
         sent = failed = no_phone = 0
         for recipient_id in ids:
             contact = db().execute("SELECT phone FROM sms_contacts WHERE user_id=?", (recipient_id,)).fetchone()
@@ -766,7 +786,7 @@ def create_app(test_config=None):
             db().execute("DELETE FROM sms_contacts WHERE user_id=?", (current_user()["id"],))
         return jsonify(**sms_contact_view())
 
-    def record_notification(row, kind, message):
+    def record_notification(row, kind, message, note=""):
         sender = db().execute("SELECT * FROM users WHERE id=?", (row["user_id"],)).fetchone()
         if kind not in {"sos", "hazard"} and not storage.settings_for(sender)["notifications"]:
             return {"in_app": "disabled", "recipients": 0,
@@ -779,7 +799,7 @@ def create_app(test_config=None):
             g.push_recipients = getattr(g, 'push_recipients', []) + [(recipient[0], notification_id)]
             db().execute("INSERT INTO notifications VALUES(?,?,?,?,?,?,?)", (notification_id, row["id"], row["user_id"], recipient[0], kind, message, storage.utcnow()))
         return {"in_app": "recorded" if recipients else "no_recipients", "recipients": len(recipients),
-                "sms": deliver_sms(row["user_id"], links, kind)}
+                "sms": deliver_sms(row["user_id"], links, kind, note)}
 
     @app.get("/api/trips")
     @signed_in
@@ -885,7 +905,8 @@ def create_app(test_config=None):
                     "deviation": "경로 이탈 확인 요청에 응답이 없어요.", "delay": "귀가 지연 확인 요청에 응답이 없어요."}
         if kind not in messages:
             raise APIError("알림 종류를 확인해 주세요.")
-        message = text(data.get("message", messages[kind]), "알림 내용", 500)
+        note = clean_note(data.get("note")) if kind == "sos" else ""
+        message = with_note(text(data.get("message", messages[kind]), "알림 내용", 400 if kind == "sos" else 500), note)
         with db():
             if kind in {"deviation", "delay"}:
                 # 앱이 자동으로 보내는 알림이라 같은 귀가에서 같은 종류가 연달아 가지 않게 막는다.
@@ -894,7 +915,7 @@ def create_app(test_config=None):
                                       (row["id"], row["user_id"], kind, since)).fetchone()
                 if recent:
                     return jsonify(notification={"in_app": "duplicate", "recipients": 0, "sms": {"status": "unavailable"}})
-            notice = record_notification(row, kind, message)
+            notice = record_notification(row, kind, message, note)
         return jsonify(notification=notice)
 
     @app.post("/api/sos")
@@ -903,7 +924,9 @@ def create_app(test_config=None):
         """귀가 안내를 시작하지 않은 상태에서도 연결된 보호자에게 앱 내 도움 요청."""
         throttle("trip-event", 20, 60)
         uid = current_user()["id"]
-        message = text(body().get("message", "보호자의 도움이 필요해요."), "알림 내용", 500)
+        data = body()
+        note = clean_note(data.get("note"))
+        message = with_note(text(data.get("message", "보호자의 도움이 필요해요."), "알림 내용", 400), note)
         active = db().execute("SELECT * FROM trips WHERE user_id=? AND status='active'", (uid,)).fetchone()
         with db():
             # 명시적인 SOS 요청은 현재 연결된 보호자에게 전달한다. 귀가 시작 후 연결된
@@ -916,7 +939,7 @@ def create_app(test_config=None):
                 g.push_recipients = getattr(g, 'push_recipients', []) + [(target[0], notification_id)]
                 db().execute("INSERT INTO notifications VALUES(?,?,?,?,?,?,?)", (notification_id, active["id"] if active else None, uid, target[0], "sos", message, storage.utcnow()))
             notice = {"in_app": "recorded" if targets else "no_recipients", "recipients": len(targets),
-                      "sms": deliver_sms(uid, links, "sos")}
+                      "sms": deliver_sms(uid, links, "sos", note)}
         return jsonify(notification=notice, location_shared=bool(active and active["share_location"]))
 
     @app.get("/api/guardian/trips")

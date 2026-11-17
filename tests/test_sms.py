@@ -377,3 +377,47 @@ def test_every_linked_message_fits_one_sms_even_with_the_longest_name(app, confi
     linked = [text for _, text in sent if "/n/" in text]
     assert len(linked) == 5  # SOS, 출발, 주의구간, 경로이탈, 지연
     assert all(len(text.encode("euc-kr")) <= 90 for text in linked), [len(t.encode("euc-kr")) for t in linked]
+
+
+def test_sos_note_is_added_to_the_text_only_when_written(app, configured, sent):
+    owner, guardian = user(app, "하늘"), user(app, "guardian")
+    connect(owner, "guardian", guardian)
+    register_phone(guardian)
+    assert change(owner, "POST", "/api/sos", {}).status_code == 200
+    short = sent[-1][1]
+    assert "남긴 말" not in short and short.count("\n") == 1
+    response = change(owner, "POST", "/api/sos", {"note": "  어두운 골목에서\n누가 따라와요  "})
+    assert response.status_code == 200, response.get_json()
+    long = sent[-1][1]
+    lines = long.split("\n")
+    assert lines[0] == "[귀가ON] 하늘님이 도움을 요청했어요!"
+    assert lines[1] == "남긴 말: 어두운 골목에서 누가 따라와요"
+    assert lines[2].startswith("https://comeback-on.kr/n/") and len(lines) == 3
+    stored = [n["message"] for n in guardian.get("/api/notifications").get_json()["notifications"] if n["kind"] == "sos"]
+    assert any("남긴 말: 어두운 골목에서 누가 따라와요" in m for m in stored)
+    assert not any(ch in long for ch in ("위도", "경도", "37.", "126."))
+
+
+def test_sos_note_is_validated(app, configured, sent):
+    owner, guardian = user(app, "owner"), user(app, "guardian")
+    connect(owner, "guardian", guardian)
+    register_phone(guardian)
+    for bad in ("가" * 101, "https://evil.example/login", "내용 www.evil.example 확인", "HTTP://x.y", 123, ["a"]):
+        assert change(owner, "POST", "/api/sos", {"note": bad}).status_code == 400, bad
+    assert sent == []
+    assert change(owner, "POST", "/api/sos", {"note": "가" * 100}).status_code == 200
+    assert change(owner, "POST", "/api/sos", {"note": "   "}).status_code == 200
+    assert "남긴 말" not in sent[-1][1]
+    assert change(owner, "POST", "/api/sos", {"note": None}).status_code == 200
+
+
+def test_trip_sos_event_also_carries_the_note(app, configured, sent):
+    owner, guardian = user(app, "하늘"), user(app, "guardian")
+    connect(owner, "guardian", guardian)
+    register_phone(guardian)
+    tid = trip_with_guardian(owner)
+    sent.clear()
+    assert change(owner, "POST", f"/api/trips/{tid}/events", {"type": "sos", "note": "다리를 다쳤어요"}).status_code == 200
+    assert "남긴 말: 다리를 다쳤어요" in sent[-1][1]
+    assert change(owner, "POST", f"/api/trips/{tid}/events", {"type": "hazard", "note": "무시됨"}).status_code == 200
+    assert all("무시됨" not in text for _, text in sent)
