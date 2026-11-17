@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS notifications (
  recipient_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
  kind TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sos_places (
+ notification_id TEXT PRIMARY KEY REFERENCES notifications(id) ON DELETE CASCADE,
+ lat REAL NOT NULL, lon REAL NOT NULL, address TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS sms_contacts (
  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
  phone TEXT NOT NULL, consented_at TEXT NOT NULL

@@ -244,3 +244,45 @@ def test_route_steps_are_validated_and_stored(app):
     assert response.status_code == 201, response.get_json()
     steps = response.get_json()["trip"]["route"]["steps"]
     assert [(s["index"], s["text"]) for s in steps] == [(1, "우회전")]
+
+
+def test_sos_location_is_stored_only_for_the_guardian_and_only_when_sent(app, monkeypatch):
+    import routing
+    monkeypatch.setattr(routing, "reverse_geocode", lambda lat, lon: "")
+    owner, guardian, stranger = (user(app, name) for name in ("sosown", "sosguard", "sosstran"))
+    connect(owner, "sosguard", guardian)
+    with_loc = change(owner, "POST", "/api/sos", {"lat": 37.4812, "lon": 126.9527})
+    assert with_loc.status_code == 200 and with_loc.get_json()["sos_location_sent"] is True
+    without = change(owner, "POST", "/api/sos", {"lat": 999, "lon": "x"})
+    assert without.status_code == 200 and without.get_json()["sos_location_sent"] is False
+    listed = guardian.get("/api/notifications").get_json()["notifications"]
+    sos = [n for n in listed if n["kind"] == "sos"]
+    assert len(sos) == 2
+    located = [n for n in sos if n["lat"] is not None]
+    assert len(located) == 1 and abs(located[0]["lon"] - 126.9527) < 1e-9
+    detail = guardian.get(f"/api/notifications/{located[0]['id']}").get_json()["notification"]
+    assert detail["lat"] == located[0]["lat"]
+    assert stranger.get(f"/api/notifications/{located[0]['id']}").status_code == 404
+    assert [n for n in owner.get("/api/notifications").get_json()["notifications"] if n.get("lat") is not None] == []
+
+
+def test_sos_address_is_looked_up_and_failures_do_not_block_sos(app, monkeypatch):
+    import routing
+    owner, guardian = (user(app, name) for name in ("addrown", "addrguard"))
+    connect(owner, "addrguard", guardian)
+    monkeypatch.setattr(routing, "reverse_geocode", lambda lat, lon: "서울 관악구 호암로 546")
+    assert change(owner, "POST", "/api/sos", {"lat": 37.4812, "lon": 126.9527}).status_code == 200
+    monkeypatch.setattr(routing, "reverse_geocode", lambda lat, lon: "")
+    assert change(owner, "POST", "/api/sos", {"lat": 37.4813, "lon": 126.9528}).status_code == 200
+    items = [n for n in guardian.get("/api/notifications").get_json()["notifications"] if n["kind"] == "sos"]
+    assert sorted(n["address"] for n in items) == ["", "서울 관악구 호암로 546"]
+
+
+def test_reverse_geocode_returns_empty_on_any_failure(monkeypatch):
+    import routing
+    monkeypatch.setattr(routing, "get_app_key", lambda: "")
+    assert routing.reverse_geocode(37.48, 126.95) == ""
+    monkeypatch.setattr(routing, "get_app_key", lambda: "k")
+    monkeypatch.setattr(routing, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
+    assert routing.reverse_geocode(37.48, 126.95) == ""
+    assert routing.reverse_geocode(999, 126.95) == ""

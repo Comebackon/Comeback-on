@@ -937,6 +937,15 @@ def create_app(test_config=None):
         data = body()
         note = clean_note(data.get("note"))
         message = with_note(text(data.get("message", "보호자의 도움이 필요해요."), "알림 내용", 400), note)
+        # SOS를 직접 누른 경우에만 그 순간의 위치를 보호자에게 함께 전달한다(없으면 위치 없이 전달).
+        sos_location = None
+        if data.get("lat") is not None and data.get("lon") is not None:
+            try:
+                sos_location = coordinates({"lat": data.get("lat"), "lon": data.get("lon")})
+            except APIError:
+                sos_location = None
+        import routing
+        sos_address = routing.reverse_geocode(*sos_location) if sos_location else ""
         active = db().execute("SELECT * FROM trips WHERE user_id=? AND status='active'", (uid,)).fetchone()
         with db():
             # 명시적인 SOS 요청은 현재 연결된 보호자에게 전달한다. 귀가 시작 후 연결된
@@ -948,9 +957,11 @@ def create_app(test_config=None):
                 links[target[0]] = notification_id
                 g.push_recipients = getattr(g, 'push_recipients', []) + [(target[0], notification_id)]
                 db().execute("INSERT INTO notifications VALUES(?,?,?,?,?,?,?)", (notification_id, active["id"] if active else None, uid, target[0], "sos", message, storage.utcnow()))
+                if sos_location:
+                    db().execute("INSERT INTO sos_places(notification_id,lat,lon,address) VALUES(?,?,?,?)", (notification_id, sos_location[0], sos_location[1], sos_address))
             notice = {"in_app": "recorded" if targets else "no_recipients", "recipients": len(targets),
                       "sms": deliver_sms(uid, links, "sos", note)}
-        return jsonify(notification=notice, location_shared=bool(active and active["share_location"]))
+        return jsonify(notification=notice, location_shared=bool(active and active["share_location"]), sos_location_sent=bool(sos_location and targets))
 
     @app.get("/api/guardian/trips")
     @signed_in
@@ -999,7 +1010,7 @@ def create_app(test_config=None):
     @app.get('/api/notifications/<notification_id>')
     @signed_in
     def notification_detail(notification_id):
-        row = db().execute('SELECT n.*,u.nickname AS sender_name FROM notifications n JOIN users u ON u.id=n.sender_id WHERE n.id=? AND n.recipient_id=?', (notification_id, current_user()['id'])).fetchone()
+        row = db().execute('SELECT n.*,u.nickname AS sender_name,l.lat AS lat,l.lon AS lon,l.address AS address FROM notifications n JOIN users u ON u.id=n.sender_id LEFT JOIN sos_places l ON l.notification_id=n.id WHERE n.id=? AND n.recipient_id=?', (notification_id, current_user()['id'])).fetchone()
         if row is None:
             raise APIError('이 알림을 찾을 수 없어요. 알림을 받은 계정인지 확인해 주세요.', 404)
         return jsonify(notification=dict(row))
@@ -1007,7 +1018,7 @@ def create_app(test_config=None):
     @app.get("/api/notifications")
     @signed_in
     def notifications():
-        rows = db().execute("SELECT n.id,n.kind,n.trip_id,n.message,n.created_at,u.nickname AS sender_name FROM notifications n JOIN users u ON n.sender_id=u.id WHERE n.recipient_id=? ORDER BY n.created_at DESC LIMIT 50", (current_user()["id"],)).fetchall()
+        rows = db().execute("SELECT n.id,n.kind,n.trip_id,n.message,n.created_at,u.nickname AS sender_name,l.lat AS lat,l.lon AS lon,l.address AS address FROM notifications n JOIN users u ON n.sender_id=u.id LEFT JOIN sos_places l ON l.notification_id=n.id WHERE n.recipient_id=? ORDER BY n.created_at DESC LIMIT 50", (current_user()["id"],)).fetchall()
         items = [dict(row, type=row["kind"], traveler_nickname=row["sender_name"]) for row in rows]
         return jsonify(notifications=items, sms_available=sms_service.configured())
 

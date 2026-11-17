@@ -42,6 +42,7 @@ from tmap_client import TmapAPIError, get_app_key, request_pedestrian_route
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 SEARCH_URL = "https://apis.openapi.sk.com/tmap/pois"
+REVERSE_URL = "https://apis.openapi.sk.com/tmap/geo/reversegeocoding"
 SEARCH_RESULT_LIMIT = 20
 MAX_ROUTE_DISTANCE_M = 30000
 MAX_GRAPH_EDGES = 50000
@@ -139,6 +140,24 @@ def search_places(query, lat=None, lon=None):
         # 정상적인 결과 없음일 때만 재검색한다. 인증·통신 오류는 전파한다.
         result = _search_places_once(SEARCH_FALLBACKS[alias], lat, lon)
     return result
+
+
+def reverse_geocode(lat, lon, timeout=4):
+    """좌표를 주소 문자열로 바꾼다. 키가 없거나 조회에 실패하면 빈 문자열(좌표만 안내)."""
+    try:
+        lat, lon = _coord(lat, lon)
+        key = get_app_key()
+        if not key:
+            return ""
+        params = {"version": "1", "lat": lat, "lon": lon, "coordType": "WGS84GEO", "addressType": "A10"}
+        request = Request(REVERSE_URL + "?" + urlencode(params), headers={"appKey": key, "Accept": "application/json", "User-Agent": "Comeback-on/1.0"})
+        with urlopen(request, timeout=timeout) as response:
+            raw = json.loads(response.read(256 * 1024))
+        info = raw.get("addressInfo") if isinstance(raw, dict) else None
+        address = info.get("fullAddress") if isinstance(info, dict) else ""
+        return " ".join(str(address or "").split())[:120]
+    except Exception:  # 주소는 부가 정보라서 어떤 실패도 SOS 전달을 막지 않는다.
+        return ""
 
 
 def _search_places_once(query, lat=None, lon=None):
