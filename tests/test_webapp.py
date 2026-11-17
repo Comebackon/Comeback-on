@@ -139,7 +139,7 @@ def test_services_capabilities_are_honest(app):
     assert caps["sms"] is False
     assert caps["phone_login"] is False
     assert not any(caps["social_login"].values())
-    assert caps["automatic_alerts"] is False
+    assert caps["automatic_alerts"] is True
     assert caps["background_location"] is False
 
 

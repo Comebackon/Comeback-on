@@ -192,3 +192,33 @@ def test_index_same_origin_assets_are_served(app):
         assert asset.status_code == 200, path
         assert asset.mimetype != "text/html", path
         assert len(asset.data) > 0, path
+
+
+def test_automatic_deviation_and_delay_alerts_are_not_repeated_within_ten_minutes(app):
+    owner, guardian = user(app, "walker"), user(app, "watcher")
+    connect(owner, "watcher", guardian)
+    tid = trip(owner, True)
+    first = change(owner, "POST", f"/api/trips/{tid}/events", {"type": "deviation", "message": "경로에서 벗어났어요."})
+    assert first.status_code == 200 and first.get_json()["notification"]["in_app"] == "recorded"
+    again = change(owner, "POST", f"/api/trips/{tid}/events", {"type": "deviation"})
+    assert again.status_code == 200 and again.get_json()["notification"]["in_app"] == "duplicate"
+    assert change(owner, "POST", f"/api/trips/{tid}/events", {"type": "delay"}).get_json()["notification"]["in_app"] == "recorded"
+    assert change(owner, "POST", f"/api/trips/{tid}/events", {"type": "delay"}).get_json()["notification"]["in_app"] == "duplicate"
+    notes = guardian.get("/api/notifications").get_json()["notifications"]
+    assert sorted(n["kind"] for n in notes if n["kind"] in {"deviation", "delay"}) == ["delay", "deviation"]
+    # 수동으로 누르는 주의 구간 알림은 이 제한을 받지 않는다.
+    assert change(owner, "POST", f"/api/trips/{tid}/events", {"type": "hazard"}).get_json()["notification"]["in_app"] == "recorded"
+    assert change(owner, "POST", f"/api/trips/{tid}/events", {"type": "hazard"}).get_json()["notification"]["in_app"] == "recorded"
+
+
+def test_alert_message_is_stored_and_a_new_trip_can_alert_again(app):
+    owner, guardian = user(app, "walker"), user(app, "watcher")
+    connect(owner, "watcher", guardian)
+    tid = trip(owner, True)
+    change(owner, "POST", f"/api/trips/{tid}/events", {"type": "deviation", "message": "100m 넘게 벗어났어요."})
+    note = next(n for n in guardian.get("/api/notifications").get_json()["notifications"] if n["kind"] == "deviation")
+    assert "100m" in note["message"]
+    assert change(owner, "PATCH", f"/api/trips/{tid}", {"action": "finish"}).status_code == 200
+    second = trip(owner, True)
+    assert change(owner, "POST", f"/api/trips/{second}/events", {"type": "deviation"}).get_json()["notification"]["in_app"] == "recorded"
+    assert change(owner, "POST", f"/api/trips/{second}/events", {"type": "bogus"}).status_code == 400

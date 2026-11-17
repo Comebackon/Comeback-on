@@ -235,7 +235,7 @@ def create_app(test_config=None):
             "tmap": bool(get_app_key()),
             "report_photos": True,
             "background_location": False,
-            "automatic_alerts": False,
+            "automatic_alerts": True,
         }
 
     def avatar_url(user_id):
@@ -887,6 +887,13 @@ def create_app(test_config=None):
             raise APIError("알림 종류를 확인해 주세요.")
         message = text(data.get("message", messages[kind]), "알림 내용", 500)
         with db():
+            if kind in {"deviation", "delay"}:
+                # 앱이 자동으로 보내는 알림이라 같은 귀가에서 같은 종류가 연달아 가지 않게 막는다.
+                since = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(timespec="seconds")
+                recent = db().execute("SELECT 1 FROM notifications WHERE trip_id=? AND sender_id=? AND kind=? AND created_at>?",
+                                      (row["id"], row["user_id"], kind, since)).fetchone()
+                if recent:
+                    return jsonify(notification={"in_app": "duplicate", "recipients": 0, "sms": {"status": "unavailable"}})
             notice = record_notification(row, kind, message)
         return jsonify(notification=notice)
 
