@@ -39,7 +39,7 @@ function harness(fetchImpl) {
     },
   };
   vm.createContext(context);
-  vm.runInContext(source + '\nglobalThis.ui={state,auth,phoneBox,smsContactCard,freshPhone,guardians,settings,registerMessage};', context);
+  vm.runInContext(source + '\nglobalThis.ui={state,auth,phoneBox,smsContactCard,freshPhone,guardians,settings,registerMessage,preferences};', context);
   context.ui.state.screen = 'auth';
   const fire = (type, target) => Promise.all((listeners.get(type) || []).map(fn => fn({ target, preventDefault() {} })));
   return { ...context.ui, requests, box, phone, code, consent, form,
@@ -190,4 +190,19 @@ test('signup result messages say exactly what happened with the guardian request
   assert.match(failed, /보내지 못했어요/);
   assert.match(failed, /보호자 관리에서 다시 요청/);
   assert.doesNotMatch(failed, /연결 요청을 보냈어요/);
+});
+
+test('no placeholder "coming soon" buttons or tags are shown to users', () => {
+  const ui = harness();
+  ui.state.capabilities = { email_login: true, phone_verification: true };
+  ui.state.user = { id: 'u', email: 'a@example.com', nickname: '하늘', avatar_url: null };
+  const placeholders = /준비 중|협의 중|기기 확인 필요|카카오|네이버|Apple|애플|전화번호로 로그인|social-btn/;
+  for (const mode of ['login', 'register']) {
+    ui.state.authMode = mode;
+    assert.doesNotMatch(ui.auth(), placeholders, mode);
+  }
+  assert.match(ui.auth(), /이메일/);
+  assert.doesNotMatch(ui.settings(), placeholders);
+  assert.doesNotMatch(ui.preferences(), placeholders);
+  assert.match(ui.preferences(), /위치 공유는 귀가를 시작할 때 직접 선택해요/);
 });
