@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import push_service
+import sms_service
 import sqlite3
 import tempfile
 import time
@@ -228,7 +229,7 @@ def create_app(test_config=None):
             "web_push": account_storage_ready, "email_login": account_storage_ready, "phone_login": False,
             "account_storage_ready": account_storage_ready,
             "social_login": {"kakao": False, "naver": False, "apple": False},
-            "sms": False, "road_graph": bool(graph and Path(graph).is_file()),
+            "sms": sms_service.configured(), "road_graph": bool(graph and Path(graph).is_file()),
             "tmap": bool(get_app_key()),
             "report_photos": True,
             "background_location": False,
@@ -468,18 +469,136 @@ def create_app(test_config=None):
             raise APIError("진행 중인 귀가를 찾을 수 없어요.", 404)
         return row
 
+    SMS_TEMPLATES = {
+        "departure": "{name}님이 귀가를 시작했어요.",
+        "arrival": "{name}님이 안전하게 도착했어요.",
+        "ended": "{name}님이 귀가 안내를 종료했어요.",
+        "sos": "{name}님이 도움을 요청했어요! 바로 연락해 주세요.",
+        "hazard": "{name}님이 귀가 경로에서 주의 구간을 확인했어요.",
+        "deviation": "{name}님이 경로를 벗어났는데 확인 요청에 응답이 없어요. 연락해 보세요.",
+        "delay": "{name}님의 귀가가 지연되는데 확인 요청에 응답이 없어요. 연락해 보세요.",
+    }
+
+    SMS_LINK_KINDS = {"departure", "sos", "hazard", "deviation", "delay"}
+
+    def sms_link(notification_id):
+        base = os.environ.get("COMEBACK_PUBLIC_URL", "").strip().rstrip("/")
+        if not base.startswith(("https://", "http://")):
+            base = "https://comeback-on.kr"
+        return f"{base}/?screen=guardian-view&notification={notification_id}"
+
+    def deliver_sms(sender_id, notifications, kind):
+        """앱 푸시를 먼저 시도하고, 푸시가 가지 않은 보호자에게만 문자를 요청한다.
+
+        SOS는 긴급 상황이라 푸시 결과와 상관없이 문자도 보낸다. 위치·목적지는 문자에 넣지 않는다.
+        "sent"는 솔라피가 요청을 접수했다는 뜻이며 통신사 도착을 보장하지 않는다.
+        """
+        if not sms_service.configured():
+            return {"status": "unavailable", "message": "문자 전송 서비스가 연결되지 않았어요."}
+        ids = list(notifications)[:5]
+        if not ids:
+            return {"status": "no_recipients", "sent": 0, "failed": 0, "no_phone": 0}
+        pushed = set()
+        if kind != "sos":
+            # 1단계: 무료 앱 푸시. 푸시 서버가 접수했으면 문자는 생략한다(보호자가 봤다는 뜻은 아니다).
+            try:
+                private_key = push_service.keys(db())["private_key"]
+            except Exception:
+                private_key = None
+            for recipient_id in ids:
+                try:
+                    if private_key and push_service.send(db(), recipient_id, private_key, notifications[recipient_id]) > 0:
+                        pushed.add(recipient_id)
+                except Exception:
+                    app.logger.warning("Web push attempt failed; falling back to SMS")
+            # 이미 시도한 푸시는 요청이 끝난 뒤 다시 보내지 않는다.
+            g.push_recipients = [item for item in getattr(g, "push_recipients", []) if item[0] not in ids]
+            ids = [recipient_id for recipient_id in ids if recipient_id not in pushed]
+            if not ids:
+                return {"status": "push", "sent": 0, "failed": 0, "no_phone": 0, "push": len(pushed)}
+        try:
+            limit = max(1, int(os.environ.get("SMS_DAILY_LIMIT", "30")))
+        except ValueError:
+            limit = 30
+        since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
+        used = db().execute("SELECT COUNT(*) FROM sms_log WHERE sender_id=? AND created_at>=?", (sender_id, since)).fetchone()[0]
+        if used + len(ids) > limit:
+            return {"status": "limited", "sent": 0, "failed": 0, "no_phone": 0, "push": len(pushed)}
+        person = db().execute("SELECT nickname FROM users WHERE id=?", (sender_id,)).fetchone()
+        template = SMS_TEMPLATES.get(kind, "{name}님의 새 알림이 있어요.")
+        message = "[귀가ON] " + template.format(name=person["nickname"] if person else "보호 대상")
+        sent = failed = no_phone = 0
+        for recipient_id in ids:
+            contact = db().execute("SELECT phone FROM sms_contacts WHERE user_id=?", (recipient_id,)).fetchone()
+            if not contact:
+                no_phone += 1
+                continue
+            # 링크는 보호자 본인의 로그인이 있어야 열리고, 그 보호자에게 온 알림 1건만 보여준다.
+            text_body = message + ("\n" + sms_link(notifications[recipient_id]) if kind in SMS_LINK_KINDS else "")
+            result = sms_service.send(contact["phone"], text_body)
+            db().execute("INSERT INTO sms_log VALUES(?,?,?,?,?,?)", (uuid4().hex, sender_id, recipient_id, kind, result["status"], storage.utcnow()))
+            if result["status"] == "sent":
+                sent += 1
+            else:
+                failed += 1
+                app.logger.warning("SMS attempt failed (%s); in-app notification retained", result.get("reason", "unknown"))
+        if sent and not failed and not no_phone:
+            status = "sent"
+        elif sent:
+            status = "partial"
+        elif failed:
+            status = "failed"
+        elif pushed:
+            status = "push"
+        else:
+            status = "no_phone"
+        return {"status": status, "sent": sent, "failed": failed, "no_phone": no_phone, "push": len(pushed)}
+
+    def sms_contact_view():
+        row = db().execute("SELECT phone FROM sms_contacts WHERE user_id=?", (current_user()["id"],)).fetchone()
+        return {"available": sms_service.configured(), "phone": sms_service.mask_phone(row["phone"]) if row else None}
+
+    @app.get("/api/sms-contact")
+    @signed_in
+    def get_sms_contact():
+        return jsonify(**sms_contact_view())
+
+    @app.put("/api/sms-contact")
+    @signed_in
+    def save_sms_contact():
+        throttle("sms-contact", 10, 3600)
+        data = body()
+        if data.get("consent") is not True:
+            raise APIError("문자 수신에 동의해야 번호를 등록할 수 있어요.")
+        phone = sms_service.normalize_phone(data.get("phone"))
+        if not phone:
+            raise APIError("휴대폰 번호를 010으로 시작하는 숫자로 입력해 주세요.")
+        with db():
+            db().execute("INSERT INTO sms_contacts(user_id,phone,consented_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET phone=excluded.phone,consented_at=excluded.consented_at",
+                         (current_user()["id"], phone, storage.utcnow()))
+        return jsonify(**sms_contact_view())
+
+    @app.delete("/api/sms-contact")
+    @signed_in
+    def delete_sms_contact():
+        with db():
+            db().execute("DELETE FROM sms_contacts WHERE user_id=?", (current_user()["id"],))
+        return jsonify(**sms_contact_view())
+
     def record_notification(row, kind, message):
         sender = db().execute("SELECT * FROM users WHERE id=?", (row["user_id"],)).fetchone()
         if kind not in {"sos", "hazard"} and not storage.settings_for(sender)["notifications"]:
             return {"in_app": "disabled", "recipients": 0,
                     "sms": {"status": "unavailable", "message": "문자 전송 서비스가 연결되지 않았어요."}}
         recipients = db().execute("SELECT g.recipient_id FROM trip_guardians tg JOIN guardians g ON tg.guardian_id=g.id WHERE tg.trip_id=? AND g.status='accepted' AND g.sender_id=?", (row["id"], row["user_id"])).fetchall()
+        links = {}
         for recipient in recipients:
             notification_id = uuid4().hex
+            links[recipient[0]] = notification_id
             g.push_recipients = getattr(g, 'push_recipients', []) + [(recipient[0], notification_id)]
             db().execute("INSERT INTO notifications VALUES(?,?,?,?,?,?,?)", (notification_id, row["id"], row["user_id"], recipient[0], kind, message, storage.utcnow()))
         return {"in_app": "recorded" if recipients else "no_recipients", "recipients": len(recipients),
-                "sms": {"status": "unavailable", "message": "문자 전송 서비스가 연결되지 않았어요. 필요하면 문자 앱에서 직접 보내 주세요."}}
+                "sms": deliver_sms(row["user_id"], links, kind)}
 
     @app.get("/api/trips")
     @signed_in
@@ -602,12 +721,14 @@ def create_app(test_config=None):
             # 명시적인 SOS 요청은 현재 연결된 보호자에게 전달한다. 귀가 시작 후 연결된
             # 보호자에게도 도움을 요청하지만 trip_guardians를 추가하거나 위치를 공개하지 않는다.
             targets = db().execute("SELECT DISTINCT recipient_id FROM guardians WHERE sender_id=? AND status='accepted'", (uid,)).fetchall()
+            links = {}
             for target in targets:
                 notification_id = uuid4().hex
+                links[target[0]] = notification_id
                 g.push_recipients = getattr(g, 'push_recipients', []) + [(target[0], notification_id)]
                 db().execute("INSERT INTO notifications VALUES(?,?,?,?,?,?,?)", (notification_id, active["id"] if active else None, uid, target[0], "sos", message, storage.utcnow()))
             notice = {"in_app": "recorded" if targets else "no_recipients", "recipients": len(targets),
-                      "sms": {"status": "unavailable", "message": "문자 전송 서비스가 연결되지 않았어요. 필요하면 문자 앱에서 직접 보내 주세요."}}
+                      "sms": deliver_sms(uid, links, "sos")}
         return jsonify(notification=notice, location_shared=bool(active and active["share_location"]))
 
     @app.get("/api/guardian/trips")
@@ -667,7 +788,7 @@ def create_app(test_config=None):
     def notifications():
         rows = db().execute("SELECT n.id,n.kind,n.trip_id,n.message,n.created_at,u.nickname AS sender_name FROM notifications n JOIN users u ON n.sender_id=u.id WHERE n.recipient_id=? ORDER BY n.created_at DESC LIMIT 50", (current_user()["id"],)).fetchall()
         items = [dict(row, type=row["kind"], traveler_nickname=row["sender_name"]) for row in rows]
-        return jsonify(notifications=items, sms_available=False)
+        return jsonify(notifications=items, sms_available=sms_service.configured())
 
     def report_view(row):
         uid = current_user()["id"] if current_user() else None
