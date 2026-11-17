@@ -305,6 +305,24 @@ def route_evidence(coordinates):
     return dict(counts), reasons
 
 
+def route_facility_points(coordinates, cap=150):
+    """지도에 표시할 경로 50m 이내 등록 시설 위치. 개수가 많으면 경로를 따라 고르게 줄인다."""
+    found = {}
+    for a, b in zip(coordinates, coordinates[1:]):
+        count = max(1, math.ceil(distance_m(a, b) / 50))
+        for step in range(count):
+            ratio = step / count
+            sample = (a[0] + (b[0] - a[0]) * ratio, a[1] + (b[1] - a[1]) * ratio)
+            for item in nearby_facilities(*sample, radius=50, limit=500):
+                if "id" not in item or "lat" not in item or "lon" not in item:
+                    continue
+                found.setdefault(item["id"], {"type": item["type"], "lat": item["lat"], "lon": item["lon"], "name": item.get("name") or item["type"]})
+    points = list(found.values())
+    if len(points) > cap:
+        points = [points[round(i * (len(points) - 1) / (cap - 1))] for i in range(cap)]
+    return points
+
+
 @dataclass
 class Edge:
     target: str
@@ -569,6 +587,7 @@ def compare_routes(payload):
     if base["distance_m"] > MAX_ROUTE_DISTANCE_M:
         raise RoutingError("계산된 보행 거리가 30km를 넘어요. 가까운 목적지를 선택해 주세요.")
     base["facility_counts"], base["reasons"] = route_evidence(base["coordinates"])
+    base["facility_points"] = route_facility_points(base["coordinates"])
     if avoid_stairs:
         base["name"] = "최단 경로 · 계단 제외"
         base["reasons"].insert(0, "TMAP의 최단거리·계단 제외 옵션을 적용했어요.")
@@ -583,6 +602,7 @@ def compare_routes(payload):
     routes = [base]
     if safe:
         safe["facility_counts"], safe["reasons"] = route_evidence(safe["coordinates"])
+        safe["facility_points"] = route_facility_points(safe["coordinates"])
         if safe.get("selection_mode") == "provider_candidates":
             safe["reasons"].insert(0, "TMAP 경로 후보 2개의 구간별 시간과 등록 CCTV·가로등·비상벨·경찰시설의 근접 정보를 비교했어요.")
         else:

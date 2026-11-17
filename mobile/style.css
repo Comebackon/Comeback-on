@@ -12,3 +12,15 @@
 .sms-card{margin-top:18px;padding:16px;border:1px solid var(--line);border-radius:var(--radius);background:var(--soft)}.sms-card h3{margin-bottom:6px}.sms-card .subtle{margin-bottom:12px;font-size:13px}.sms-card .field{margin-bottom:10px}
 .phone-box .row{align-items:stretch}.phone-box .row input{flex:1;min-width:0}.phone-box .row .btn{white-space:nowrap;min-height:48px;padding:10px 12px;font-size:13px}.phone-box .notice{margin:0 0 14px}
 .avatar-img{width:46px;height:46px;border-radius:50%;object-fit:cover;flex-shrink:0;background:#e6ecf4}.card .avatar-img{width:40px;height:40px}.profile-actions{display:flex;gap:8px;flex-wrap:wrap;margin:-8px 0 20px}
+
+.list-item:active{background:#fff3c4}
+.route:active{transform:scale(.99);background:#fff7dc}
+.address-row.set{border-color:#f4b621;background:#fffbf0}
+.set-badge{display:inline-block;margin-left:8px;padding:1px 7px;border-radius:9px;background:#f4b621;color:#132d4c;font-size:10px;font-weight:800;vertical-align:middle}
+.fac-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.fac-chip{padding:3px 8px;border-radius:10px;background:#eef2f8;color:#2a3d5c;font-size:11px;font-weight:700}
+.fac-legend{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px}
+.fac-row{display:flex;align-items:center;gap:7px;font-size:13px}.fac-row strong{margin-left:auto}
+.fac-dot,.fac-pin{width:12px;height:12px;border-radius:50%;display:inline-block;border:2px solid #fff;box-shadow:0 1px 4px #142a4b55}
+.fac-pin{width:14px;height:14px}
+.fac-0{background:#2f7fd8}.fac-1{background:#f2b705}.fac-2{background:#e0453a}.fac-3{background:#2b9a6b}.fac-4{background:#9b59b6}.fac-5{background:#6d7c91}

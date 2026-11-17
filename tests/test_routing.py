@@ -201,3 +201,15 @@ class RouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FacilityPointsTests(unittest.TestCase):
+    @patch("routing.nearby_facilities")
+    def test_points_are_deduplicated_and_capped(self, facilities):
+        items = [{"id": f"c:{i}", "type": "CCTV", "lat": 37 + i * 1e-5, "lon": 127, "name": "CCTV"} for i in range(300)]
+        facilities.return_value = items
+        points = routing.route_facility_points([[37, 127], [37.01, 127]], cap=50)
+        self.assertEqual(len(points), 50)
+        self.assertEqual(len({(p["lat"], p["lon"]) for p in points}), 50)
+        facilities.return_value = items[:3]
+        self.assertEqual(len(routing.route_facility_points([[37, 127], [37.01, 127]])), 3)
