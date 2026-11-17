@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import heapq
 import json
+import copy
 import math
 import os
 from pathlib import Path
@@ -587,4 +588,11 @@ def compare_routes(payload):
         else:
             safe["reasons"].insert(0, "확인된 구간별 주의 정보에 가중치를 적용해 설정한 우회 시간 안에서 경로를 계산했어요.")
         routes.append(safe)
-    return {"routes": routes, "safe_available": safe is not None, "safe_is_shortest": safe is None and warning in SAFE_IS_SHORTEST_MESSAGES, "safe_message": SAFE_IS_SHORTEST_MESSAGES.get(warning, "") if safe is None else "", "warnings": [warning] if warning else [], "detour": {"percent": percentage, "max_extra_minutes": max_extra, "max_duration_s": math.floor(limit)}, "explanation_mode": "data", "notice": "등록 시설의 존재는 현장 안전을 보장하지 않아요. 데이터가 없는 구간을 위험하다고 판단하지 않아요."}
+    same = safe is None and warning in SAFE_IS_SHORTEST_MESSAGES
+    if same:
+        # 비교를 마쳤고 우회할 이유가 없을 때: 같은 경로를 안심 경로로도 고를 수 있게 한다. 경로 자체는 최단 경로와 같다.
+        twin = copy.deepcopy(base)
+        twin.update({"id": "safe", "name": "안심 경로", "same_as_shortest": True, "source": "TMAP 후보 비교 · 최단 경로와 동일", "selection_mode": "same_as_shortest"})
+        twin["reasons"] = [SAFE_IS_SHORTEST_MESSAGES[warning]] + [r for r in base.get("reasons", []) if r != SAFE_IS_SHORTEST_MESSAGES[warning]]
+        routes.append(twin)
+    return {"routes": routes, "safe_available": safe is not None or same, "safe_is_shortest": same, "safe_message": SAFE_IS_SHORTEST_MESSAGES.get(warning, "") if same else "", "warnings": [warning] if warning else [], "detour": {"percent": percentage, "max_extra_minutes": max_extra, "max_duration_s": math.floor(limit)}, "explanation_mode": "data", "notice": "등록 시설의 존재는 현장 안전을 보장하지 않아요. 데이터가 없는 구간을 위험하다고 판단하지 않아요."}

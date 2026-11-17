@@ -89,8 +89,11 @@ class RouteTests(unittest.TestCase):
     def test_identical_provider_candidates_return_only_actual_route(self, provider, evidence):
         provider.return_value = self.tmap_response()
         result = routing.compare_routes(self.payload())
-        self.assertFalse(result["safe_available"])
-        self.assertEqual(len(result["routes"]), 1)
+        self.assertTrue(result["safe_available"])
+        self.assertEqual(len(result["routes"]), 2)
+        self.assertEqual(result["routes"][1]["id"], "safe")
+        self.assertTrue(result["routes"][1]["same_as_shortest"])
+        self.assertEqual(result["routes"][1]["coordinates"], result["routes"][0]["coordinates"])
         self.assertEqual(result["routes"][0]["coordinates"], [[37, 127], [37, 127.001]])
         self.assertEqual(result["detour"]["max_duration_s"], 1300)
         self.assertIn("같은 경로", result["warnings"][0])
@@ -133,9 +136,9 @@ class RouteTests(unittest.TestCase):
         alt["features"][1]["geometry"]["coordinates"] = [[127, 37], [127.0005, 37.001], [127.001, 37]]
         provider.side_effect = [self.tmap_response(), alt]
         result = routing.compare_routes(self.payload())
-        self.assertFalse(result["safe_available"])
-        self.assertEqual(len(result["routes"]), 1)
         self.assertTrue(result["safe_is_shortest"])
+        self.assertEqual(len(result["routes"]), 2)
+        self.assertEqual(result["routes"][1]["selection_mode"], "same_as_shortest")
 
     @patch.dict(os.environ, {"TMAP_APP_KEY": "test", "ROUTING_GRAPH_FILE": ""})
     @patch("routing.route_evidence", return_value=({}, []))
