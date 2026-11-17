@@ -94,6 +94,8 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(result["routes"][0]["coordinates"], [[37, 127], [37, 127.001]])
         self.assertEqual(result["detour"]["max_duration_s"], 1300)
         self.assertIn("같은 경로", result["warnings"][0])
+        self.assertTrue(result["safe_is_shortest"])
+        self.assertIn("최단 경로가 곧 안심 경로", result["safe_message"])
         self.assertEqual([call.kwargs["search_option"] for call in provider.call_args_list], ["10", "4"])
 
     @patch.dict(os.environ, {"TMAP_APP_KEY": "test", "ROUTING_GRAPH_FILE": ""})
@@ -133,6 +135,7 @@ class RouteTests(unittest.TestCase):
         result = routing.compare_routes(self.payload())
         self.assertFalse(result["safe_available"])
         self.assertEqual(len(result["routes"]), 1)
+        self.assertTrue(result["safe_is_shortest"])
 
     @patch.dict(os.environ, {"TMAP_APP_KEY": "test", "ROUTING_GRAPH_FILE": ""})
     @patch("routing.route_evidence", return_value=({}, []))
@@ -142,6 +145,8 @@ class RouteTests(unittest.TestCase):
         result = routing.compare_routes(self.payload())
         self.assertFalse(result["safe_available"])
         self.assertIn("우회 시간", result["warnings"][0])
+        self.assertFalse(result["safe_is_shortest"])
+        self.assertEqual(result["safe_message"], "")
 
     def test_unrelated_verified_penalty_does_not_create_safe_claim(self):
         doc = collection(

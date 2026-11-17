@@ -509,6 +509,15 @@ def _candidate_graph(candidates):
     return graph
 
 
+SAME_ROUTE_WARNING = "TMAP의 최단·대로우선 후보가 같은 경로예요. 별도의 안심 대안은 표시하지 않았어요."
+NO_BETTER_WARNING = "두 경로 후보 안에서 우회 시간과 등록 시설 조건을 함께 고려한 결과, 별도로 추천할 대안을 찾지 못했어요. 시설 미등록을 위험으로 판단하지는 않아요."
+# 비교를 실제로 마쳤고 우회할 이유가 없을 때만 최단 경로가 곧 안심 경로라고 안내한다.
+SAFE_IS_SHORTEST_MESSAGES = {
+    SAME_ROUTE_WARNING: "비교한 경로 후보가 모두 같은 길이에요. 최단 경로가 곧 안심 경로로, 돌아갈 필요 없이 안내해요.",
+    NO_BETTER_WARNING: "우회해서 더 안심할 수 있는 경로가 확인되지 않았어요. 최단 경로가 곧 안심 경로로 안내돼요.",
+}
+
+
 def _provider_candidate(base, start, end, payload, limit, avoid_stairs):
     if avoid_stairs:
         return None, "계단 제외 최단 경로를 안내해요. 계단 제외가 확인되지 않은 대로우선 후보는 비교하지 않았어요."
@@ -520,11 +529,11 @@ def _provider_candidate(base, start, end, payload, limit, avoid_stairs):
     if alternative["duration_s"] > math.floor(limit) or alternative["distance_m"] > MAX_ROUTE_DISTANCE_M:
         return None, "등록 시설을 비교할 추가 경로가 설정한 우회 시간을 넘어 최단 경로를 안내해요."
     if alternative["coordinates"] == base["coordinates"]:
-        return None, "TMAP의 최단·대로우선 후보가 같은 경로예요. 별도의 안심 대안은 표시하지 않았어요."
+        return None, SAME_ROUTE_WARNING
     graph = _candidate_graph([base, alternative])
     selected = dijkstra(graph, "start", "finish", max_duration=math.floor(limit))
     if not selected or selected[0].reason != "1" or not any(edge.cost < edge.duration for edge in selected):
-        return None, "두 경로 후보 안에서 우회 시간과 등록 시설 조건을 함께 고려한 결과, 별도로 추천할 대안을 찾지 못했어요. 시설 미등록을 위험으로 판단하지는 않아요."
+        return None, NO_BETTER_WARNING
     alternative.update({"id": "safe", "name": "안심 경로", "source": "TMAP 후보 2개 비교 · 다익스트라", "selection_mode": "provider_candidates", "warnings": ["전체 도로망의 최적 경로가 아니라 TMAP의 최단·대로우선 후보 2개를 비교한 결과예요.", "주변 등록 시설에 가중치를 적용한 후보이며 실제 안전이나 시설 작동을 보장하지 않아요."]})
     return alternative, None
 
@@ -578,4 +587,4 @@ def compare_routes(payload):
         else:
             safe["reasons"].insert(0, "확인된 구간별 주의 정보에 가중치를 적용해 설정한 우회 시간 안에서 경로를 계산했어요.")
         routes.append(safe)
-    return {"routes": routes, "safe_available": safe is not None, "warnings": [warning] if warning else [], "detour": {"percent": percentage, "max_extra_minutes": max_extra, "max_duration_s": math.floor(limit)}, "explanation_mode": "data", "notice": "등록 시설의 존재는 현장 안전을 보장하지 않아요. 데이터가 없는 구간을 위험하다고 판단하지 않아요."}
+    return {"routes": routes, "safe_available": safe is not None, "safe_is_shortest": safe is None and warning in SAFE_IS_SHORTEST_MESSAGES, "safe_message": SAFE_IS_SHORTEST_MESSAGES.get(warning, "") if safe is None else "", "warnings": [warning] if warning else [], "detour": {"percent": percentage, "max_extra_minutes": max_extra, "max_duration_s": math.floor(limit)}, "explanation_mode": "data", "notice": "등록 시설의 존재는 현장 안전을 보장하지 않아요. 데이터가 없는 구간을 위험하다고 판단하지 않아요."}
