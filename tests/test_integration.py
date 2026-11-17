@@ -232,3 +232,15 @@ def test_ending_trip_erases_route_coordinates(app, action):
     import sqlite3
     raw = sqlite3.connect(app.config["DATABASE"]).execute("SELECT route FROM trips WHERE id=?", (tid,)).fetchone()[0]
     assert raw == "{}"
+
+
+def test_route_steps_are_validated_and_stored(app):
+    owner = user(app, "steps")
+    route = {"id": "safe", "name": "안심 경로", "coordinates": [[37.479, 126.929], [37.48, 126.93]], "distance_m": 200, "duration_s": 180,
+             "steps": [{"index": 1, "lat": 37.48, "lon": 126.93, "turn": 13, "text": "  우회전  "},
+                       {"index": 9, "lat": 37.48, "lon": 126.93, "turn": 13, "text": "범위 밖"},
+                       {"index": 0, "lat": 99, "lon": 126.93, "turn": 13, "text": "잘못된 좌표"}]}
+    response = change(owner, "POST", "/api/trips", {"destination": {"name": "목적지", "lat": 37.48, "lon": 126.93}, "route": route, "share_location": False})
+    assert response.status_code == 201, response.get_json()
+    steps = response.get_json()["trip"]["route"]["steps"]
+    assert [(s["index"], s["text"]) for s in steps] == [(1, "우회전")]

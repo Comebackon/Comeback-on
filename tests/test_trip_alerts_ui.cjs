@@ -32,7 +32,7 @@ function harness(fetchImpl) {
     async fetch(url, options) { requests.push({ url, body: options.body ? JSON.parse(options.body) : null }); return fetchImpl ? fetchImpl(url, options) : response({ notification: { in_app: 'recorded', sms: { status: 'push' } } }); },
   };
   vm.createContext(context);
-  vm.runInContext(source + '\nglobalThis.ui={state,metersToRoute,tripCheckKind,evaluateTrip,tripWatch,preferences,notificationFeedback,startLocationWatch,stopLocationWatch,closeDialog,askTripCheck};', context);
+  vm.runInContext(source + '\nglobalThis.ui={state,metersToRoute,tripCheckKind,evaluateTrip,tripWatch,preferences,notificationFeedback,startLocationWatch,stopLocationWatch,closeDialog,askTripCheck,turnProgress,turnCard};', context);
   const ui = context.ui;
   ui.state.user = { id: 'u', email: 'a@example.com', nickname: '하늘' };
   ui.state.trip = { id: 't1', local: false, share_location: true, destination: { name: '집' }, route: { name: '안심 경로', coordinates: ROUTE },
@@ -193,4 +193,28 @@ test('the periodic check starts with the location watch and stops with it', () =
   assert.equal([...ui.timers.values()].filter(t => t.ms === 15000).length, 1);
   ui.stopLocationWatch();
   assert.equal([...ui.timers.values()].filter(t => t.ms === 15000).length, 0);
+});
+
+test('next turn is the first step ahead with distance along the route', () => {
+  const ui = harness();
+  ui.state.trip.route.steps = [{ index: 1, lat: 37.5, lon: 127.005, turn: 13, text: '우회전 후 직진' }, { index: 2, lat: 37.5, lon: 127.01, turn: 201, text: '도착' }];
+  ui.state.location = { lat: 37.5, lon: 127.0 };
+  let p = ui.turnProgress();
+  assert.equal(p.step.turn, 13);
+  assert.ok(p.meters > 430 && p.meters < 460, `expected ~443m, got ${p.meters}`);
+  ui.state.location = { lat: 37.5, lon: 127.0051 };
+  p = ui.turnProgress();
+  assert.equal(p.step.turn, 201);
+  assert.match(ui.turnCard(), /도착/);
+});
+
+test('turn card says so when off route and hides without steps', () => {
+  const ui = harness();
+  assert.equal(ui.turnCard(), '');
+  ui.state.trip.route.steps = [{ index: 1, lat: 37.5, lon: 127.005, turn: 13, text: '우회전' }];
+  ui.state.location = { lat: 37.503, lon: 127.0025 };
+  assert.equal(ui.turnProgress().off, true);
+  assert.match(ui.turnCard(), /경로에서 벗어났어요/);
+  ui.state.location = null;
+  assert.match(ui.turnCard(), /현재 위치를 확인하면/);
 });

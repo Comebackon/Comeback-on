@@ -833,8 +833,18 @@ def create_app(test_config=None):
             raise APIError("경로 시간과 거리를 확인해 주세요.")
         if not 0 < duration <= 86400 or not 0 < distance <= 200000:
             raise APIError("안내 가능한 경로 범위를 벗어났어요.")
+        steps = []
+        for step in (route.get("steps") if isinstance(route.get("steps"), list) else [])[:300]:
+            try:
+                index, turn = int(step["index"]), int(step["turn"])
+                label = " ".join(str(step["text"]).split())[:120]
+                slat, slon = coordinates({"lat": step["lat"], "lon": step["lon"]})
+            except (KeyError, TypeError, ValueError, APIError):
+                continue
+            if 0 <= index < len(checked_coords) and label:
+                steps.append({"index": index, "lat": slat, "lon": slon, "turn": turn, "text": label})
         route = {"id": text(route.get("id", "basic"), "경로 종류", 30), "name": text(route.get("name", "기본 경로"), "경로 이름", 60),
-                 "coordinates": checked_coords, "duration_s": duration, "distance_m": distance}
+                 "coordinates": checked_coords, "duration_s": duration, "distance_m": distance, "steps": steps}
         share = data.get("share_location", False)
         if not isinstance(share, bool):
             raise APIError("위치 공유 여부를 확인해 주세요.")

@@ -460,7 +460,28 @@ def _tmap_route(raw):
         raise RoutingError("이 위치의 보행 경로를 찾지 못했어요. 출발지와 목적지를 확인해 주세요.")
     distance = _number(distance, "경로 거리", 1, 100000)
     duration = _number(duration, "경로 소요 시간", 1, 86400)
-    return {"id": "basic", "name": "최단 경로", "coordinates": coords, "distance_m": round(distance), "duration_s": round(duration), "source": "TMAP 보행자 최단 경로", "warnings": []}
+    return {"id": "basic", "name": "최단 경로", "coordinates": coords, "distance_m": round(distance), "duration_s": round(duration), "source": "TMAP 보행자 최단 경로", "warnings": [], "steps": _tmap_steps(raw, coords)}
+
+
+def _tmap_steps(raw, coords):
+    """TMAP이 준 회전 안내를 경로 좌표 위치에 맞춰 단계별 안내로 바꾼다. 없으면 빈 목록."""
+    steps = []
+    try:
+        for feature in raw.get("features", []):
+            props, geometry = feature.get("properties", {}), feature.get("geometry", {})
+            if geometry.get("type") != "Point" or not isinstance(props.get("turnType"), int) or props["turnType"] == 200:
+                continue
+            description = " ".join(str(props.get("description", "")).split())[:120]
+            if not description:
+                continue
+            lon, lat = geometry["coordinates"][:2]
+            lat, lon = _coord(lat, lon)
+            index = min(range(len(coords)), key=lambda i: (coords[i][0] - lat) ** 2 + (coords[i][1] - lon) ** 2)
+            steps.append({"index": index, "lat": lat, "lon": lon, "turn": props["turnType"], "text": description})
+    except (TypeError, ValueError, KeyError, IndexError, AttributeError, RoutingError):
+        return []
+    steps.sort(key=lambda step: step["index"])
+    return steps[:300]
 
 
 def _safe_route(base, start, end, limit, avoid_stairs):

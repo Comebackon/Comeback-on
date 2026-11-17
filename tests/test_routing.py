@@ -213,3 +213,20 @@ class FacilityPointsTests(unittest.TestCase):
         self.assertEqual(len({(p["lat"], p["lon"]) for p in points}), 50)
         facilities.return_value = items[:3]
         self.assertEqual(len(routing.route_facility_points([[37, 127], [37.01, 127]])), 3)
+
+
+class StepTests(unittest.TestCase):
+    def test_tmap_turn_points_become_steps(self):
+        raw = {"features": [
+            {"properties": {"totalDistance": 300, "totalTime": 300, "turnType": 200, "description": "출발"}, "geometry": {"type": "Point", "coordinates": [127, 37]}},
+            {"properties": {"turnType": 13, "description": "  우회전 후   직진 "}, "geometry": {"type": "Point", "coordinates": [127.001, 37]}},
+            {"properties": {"turnType": 201, "description": "도착"}, "geometry": {"type": "Point", "coordinates": [127.002, 37]}},
+            {"properties": {}, "geometry": {"type": "LineString", "coordinates": [[127, 37], [127.001, 37], [127.002, 37]]}}]}
+        route = routing._tmap_route(raw)
+        self.assertEqual([(s["index"], s["turn"], s["text"]) for s in route["steps"]], [(1, 13, "우회전 후 직진"), (2, 201, "도착")])
+
+    def test_missing_or_bad_turn_data_gives_no_steps(self):
+        raw = {"features": [
+            {"properties": {"totalDistance": 100, "totalTime": 100}, "geometry": {"type": "Point", "coordinates": [127, 37]}},
+            {"properties": {}, "geometry": {"type": "LineString", "coordinates": [[127, 37], [127.001, 37]]}}]}
+        self.assertEqual(routing._tmap_route(raw)["steps"], [])

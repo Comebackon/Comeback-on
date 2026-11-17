@@ -24,3 +24,9 @@
 .fac-dot,.fac-pin{width:12px;height:12px;border-radius:50%;display:inline-block;border:2px solid #fff;box-shadow:0 1px 4px #142a4b55}
 .fac-pin{width:14px;height:14px}
 .fac-0{background:#2f7fd8}.fac-1{background:#f2b705}.fac-2{background:#e0453a}.fac-3{background:#2b9a6b}.fac-4{background:#9b59b6}.fac-5{background:#6d7c91}
+
+.turn-card{display:flex;align-items:center;gap:14px;margin-top:14px;padding:14px 16px;border-radius:14px;background:#132d4c;color:#fff}
+.turn-card strong{font-size:20px;letter-spacing:-.4px}.turn-card p{font-size:14px;margin:3px 0 0;color:#e7edf6}
+.turn-card .caption{color:#c9d4e4}
+.turn-glyph{width:44px;height:44px;border-radius:50%;background:#f4b621;color:#132d4c;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:900;flex-shrink:0}
+.turn-card.off{background:#7a2a22}.turn-card.off .turn-glyph{background:#fff;color:#7a2a22}
