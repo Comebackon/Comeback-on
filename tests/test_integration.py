@@ -159,7 +159,7 @@ def test_delete_account_removes_photos_connections_and_shared_trip(app):
 
 
 def test_logged_out_cookie_cannot_be_replayed(app):
-    owner = user(app, "session-owner")
+    owner = user(app, "sess-owner")
     old_cookie = owner.get_cookie("session").value
     old_token = owner.get("/api/me").get_json()["csrf_token"]
     assert change(owner, "POST", "/api/auth/logout").status_code == 200
@@ -169,8 +169,8 @@ def test_logged_out_cookie_cannot_be_replayed(app):
 
 
 def test_deleting_last_guardian_clears_formerly_shared_position(app):
-    owner, guardian = user(app, "traveler"), user(app, "last-guardian")
-    connect(owner, "last-guardian", guardian)
+    owner, guardian = user(app, "traveler"), user(app, "last-guard")
+    connect(owner, "last-guard", guardian)
     tid = trip(owner, True)
     assert change(owner, "PATCH", f"/api/trips/{tid}", {"action": "location", "lat": 37.47, "lon": 126.93}).status_code == 200
     assert change(guardian, "DELETE", "/api/account", {"password": "testing-12345"}).status_code == 200

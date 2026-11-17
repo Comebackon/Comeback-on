@@ -39,7 +39,7 @@ function harness(fetchImpl) {
     },
   };
   vm.createContext(context);
-  vm.runInContext(source + '\nglobalThis.ui={state,auth,phoneBox,smsContactCard,freshPhone};', context);
+  vm.runInContext(source + '\nglobalThis.ui={state,auth,phoneBox,smsContactCard,freshPhone,guardians,settings,registerMessage};', context);
   context.ui.state.screen = 'auth';
   const fire = (type, target) => Promise.all((listeners.get(type) || []).map(fn => fn({ target, preventDefault() {} })));
   return { ...context.ui, requests, box, phone, code, consent, form,
@@ -140,4 +140,54 @@ test('number card on the guardian screen uses the same verification box', () => 
   assert.match(html, /id="phone-box"/);
   assert.match(html, /인증번호 받기/);
   assert.match(html, /name="consent" required/);
+});
+
+test('guardian screen no longer asks for a phone number; settings holds the number card', () => {
+  const ui = harness();
+  ui.state.user = { id: 'u', email: 'a@example.com', nickname: '하늘', avatar_url: null };
+  ui.state.capabilities = { sms: true, phone_verification: true };
+  ui.state.smsContact = { available: true, phone: '010-****-5678' };
+  assert.doesNotMatch(ui.guardians(), /sms-card|문자 알림 받기|sms-contact/);
+  const html = ui.settings();
+  assert.match(html, /문자 알림 받기/);
+  assert.match(html, /010-\*\*\*\*-5678/);
+  assert.match(html, /data-action="sms-contact-delete"/);
+});
+
+test('signup form has an optional guardian email that can be skipped', () => {
+  const ui = harness();
+  ui.state.authMode = 'register';
+  ui.state.capabilities = { email_login: true, phone_verification: true };
+  const html = ui.auth();
+  assert.match(html, /name="guardian_email"/);
+  assert.doesNotMatch(html, /name="guardian_email"[^>]*required/);
+  assert.match(html, /선택/);
+  ui.state.authMode = 'login';
+  assert.doesNotMatch(ui.auth(), /guardian_email/);
+});
+
+test('signup sends the guardian email only when one was typed', async () => {
+  const done = () => response({ user: { id: 'u', email: 'walker@example.com', nickname: 'n' }, csrf_token: 'c', capabilities: { email_login: true }, settings: {} });
+  const run = async guardian => {
+    const ui = harness(url => url === '/api/auth/register' ? done() : response({ trip: null, notifications: [] }));
+    ui.state.authMode = 'register';
+    ui.state.capabilities = { email_login: true, phone_verification: true };
+    ui.state.phoneAuth = { ...ui.state.phoneAuth, step: 'verified', value: '01012345678', proof: 'p' };
+    ui.form.fields.guardian_email = { name: 'guardian_email', value: guardian };
+    await ui.submitForm();
+    return ui.requests.find(r => r.url === '/api/auth/register').body;
+  };
+  assert.equal((await run('  mom@example.com ')).guardian_email, 'mom@example.com');
+  assert.equal('guardian_email' in (await run('   ')), false);
+});
+
+test('signup result messages say exactly what happened with the guardian request', () => {
+  const ui = harness();
+  assert.equal(ui.registerMessage(undefined), '가입했어요. 반가워요!');
+  assert.match(ui.registerMessage({ status: 'sent' }), /연결 요청을 보냈어요/);
+  const failed = ui.registerMessage({ status: 'failed', message: '귀가ON에 가입된 보호자 이메일인지 확인해 주세요.' });
+  assert.match(failed, /^가입했어요/);
+  assert.match(failed, /보내지 못했어요/);
+  assert.match(failed, /보호자 관리에서 다시 요청/);
+  assert.doesNotMatch(failed, /연결 요청을 보냈어요/);
 });

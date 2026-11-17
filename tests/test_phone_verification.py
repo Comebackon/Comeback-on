@@ -209,3 +209,36 @@ def test_changing_the_saved_number_needs_a_fresh_verification(app, configured, t
     new_proof = proof_for(app.test_client(), texts, "01099998888")
     assert put({"phone": "01099998888", "consent": True, "phone_proof": new_proof}).get_json()["phone"] == "010-****-8888"
     assert rows(app, "SELECT phone FROM sms_contacts") == [("01099998888",)]
+
+
+def test_signup_can_request_a_guardian_and_failure_does_not_block_signup(app, configured, texts):
+    first = app.test_client()
+    ok = first.post("/api/auth/register", json={"email": "guardian@example.test", "password": "testing-12345", "nickname": "보호자",
+                                                 "phone": PHONE, "phone_proof": proof_for(first, texts), "consent": True})
+    assert ok.status_code == 201 and "guardian_request" not in ok.get_json()
+    other = app.test_client()
+    phone2 = "01099998888"
+    response = other.post("/api/auth/register", json={"email": "child@example.test", "password": "testing-12345", "nickname": "자녀",
+                                                       "phone": phone2, "phone_proof": proof_for(other, texts, phone2), "consent": True,
+                                                       "guardian_email": " Guardian@Example.test "})
+    assert response.status_code == 201, response.get_json()
+    assert response.get_json()["guardian_request"] == {"status": "sent"}
+    token = other.get("/api/me").get_json()["csrf_token"]
+    listed = other.get("/api/guardians").get_json()["guardians"]
+    assert [(g["status"], g["direction"], g["person"]["email"]) for g in listed] == [("pending", "outgoing", "guardian@example.test")]
+    third = app.test_client()
+    phone3 = "01077776666"
+    miss = third.post("/api/auth/register", json={"email": "c3@example.test", "password": "testing-12345", "nickname": "셋",
+                                                   "phone": phone3, "phone_proof": proof_for(third, texts, phone3), "consent": True,
+                                                   "guardian_email": "nobody@example.test"})
+    assert miss.status_code == 201
+    result = miss.get_json()["guardian_request"]
+    assert result["status"] == "failed" and "가입된 보호자 이메일" in result["message"]
+    assert third.get("/api/me").get_json()["user"]["email"] == "c3@example.test"
+    assert third.get("/api/guardians").get_json()["guardians"] == []
+    own = app.test_client()
+    phone4 = "01055554444"
+    mine = own.post("/api/auth/register", json={"email": "me@example.test", "password": "testing-12345", "nickname": "나",
+                                                 "phone": phone4, "phone_proof": proof_for(own, texts, phone4), "consent": True,
+                                                 "guardian_email": "me@example.test"})
+    assert mine.status_code == 201 and mine.get_json()["guardian_request"]["status"] == "failed"

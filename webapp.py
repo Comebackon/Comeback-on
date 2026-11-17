@@ -1,6 +1,7 @@
 """귀가ON 모바일 웹/API. 실행: gunicorn 'webapp:app'. 기존 분석 지도는 app.py에 유지."""
 
 import io
+import base64
 import hashlib
 import hmac
 import json
@@ -19,8 +20,8 @@ from functools import wraps
 from pathlib import Path
 from uuid import uuid4
 
-from flask import Flask, g, jsonify, request, send_from_directory, session
-from PIL import Image, UnidentifiedImageError
+from flask import Flask, Response, g, jsonify, redirect, request, send_from_directory, session
+from PIL import Image, ImageOps, UnidentifiedImageError
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -237,9 +238,18 @@ def create_app(test_config=None):
             "automatic_alerts": False,
         }
 
+    def avatar_url(user_id):
+        row = db().execute("SELECT updated_at FROM user_avatars WHERE user_id=?", (user_id,)).fetchone()
+        if not row:
+            return None
+        return f"/api/avatar/{user_id}?v={hashlib.sha1(row['updated_at'].encode()).hexdigest()[:8]}"
+
     def session_view():
         row = current_user()
-        return {"user": storage.user_view(row), "csrf_token": csrf_token(),
+        user = storage.user_view(row)
+        if user:
+            user["avatar_url"] = avatar_url(user["id"])
+        return {"user": user, "csrf_token": csrf_token(),
                 "capabilities": capabilities(), "settings": storage.settings_for(row)}
 
     @app.get("/api/me")
@@ -256,7 +266,7 @@ def create_app(test_config=None):
     def health():
         return jsonify(status="ok")
 
-    def authenticate(row, remember=True):
+    def authenticate(row, remember=True, extra=None):
         sid = secrets.token_urlsafe(32)
         with db():
             db().execute("DELETE FROM sessions WHERE expires_at<=?", (int(time.time()),))
@@ -266,7 +276,7 @@ def create_app(test_config=None):
         session["sid"] = sid
         session.permanent = remember
         g.user = row
-        return jsonify(session_view())
+        return jsonify({**session_view(), **(extra or {})})
 
     OTP_TTL = 300
     OTP_RESEND = 60
@@ -357,7 +367,7 @@ def create_app(test_config=None):
         email = text(data.get("email"), "이메일", 254).lower()
         if not EMAIL.match(email):
             raise APIError("이메일 형식을 확인해 주세요.")
-        nickname = text(data.get("nickname"), "닉네임", 30)
+        nickname = text(data.get("nickname"), "닉네임", 10)
         password = data.get("password")
         if not isinstance(password, str) or not 8 <= len(password) <= 128:
             raise APIError("비밀번호는 8~128자로 입력해 주세요.")
@@ -379,7 +389,16 @@ def create_app(test_config=None):
                          (uid, email, nickname, generate_password_hash(password), storage.utcnow()))
             if phone:
                 db().execute("INSERT INTO sms_contacts(user_id,phone,consented_at) VALUES(?,?,?)", (uid, phone, storage.utcnow()))
-        return authenticate(db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone(), data.get("remember", True) is True), 201
+        extra = None
+        guardian_email = data.get("guardian_email")
+        if isinstance(guardian_email, str) and guardian_email.strip():
+            # 보호자 등록은 선택이다. 실패해도 가입은 그대로 끝나고 결과만 알려준다.
+            try:
+                request_guardian(uid, guardian_email)
+                extra = {"guardian_request": {"status": "sent"}}
+            except APIError as error:
+                extra = {"guardian_request": {"status": "failed", "message": error.message}}
+        return authenticate(db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone(), data.get("remember", True) is True, extra), 201
 
     @app.post("/api/auth/login")
     def login():
@@ -406,6 +425,64 @@ def create_app(test_config=None):
         session.clear()
         g.user = None
         return jsonify(session_view())
+
+    @app.patch("/api/profile")
+    @signed_in
+    def update_profile():
+        nickname = text(body().get("nickname"), "닉네임", 10)
+        with db():
+            db().execute("UPDATE users SET nickname=? WHERE id=?", (nickname, current_user()["id"]))
+        g.user = db().execute("SELECT * FROM users WHERE id=?", (current_user()["id"],)).fetchone()
+        return jsonify(session_view())
+
+    @app.post("/api/profile/photo")
+    @signed_in
+    def upload_avatar():
+        throttle("avatar", 10, 600)
+        upload = request.files.get("photo")
+        if not upload:
+            raise APIError("올릴 사진을 선택해 주세요.")
+        raw = upload.read(3 * 1024 * 1024 + 1)
+        if len(raw) > 3 * 1024 * 1024:
+            raise APIError("사진은 3MB 이하로 올려 주세요.", 413)
+        try:
+            picture = Image.open(io.BytesIO(raw))
+            if picture.format not in {"JPEG", "PNG"} or picture.width * picture.height > 12_000_000:
+                raise APIError("1200만 화소 이하 JPG·PNG 사진만 올릴 수 있어요.")
+            picture.load()
+            picture = ImageOps.exif_transpose(picture).convert("RGB")
+            # 가운데를 정사각형으로 잘라 줄이고 새로 인코딩해 GPS/EXIF와 파일명을 제거한다.
+            picture = ImageOps.fit(picture, (256, 256), Image.LANCZOS)
+        except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
+            raise APIError("사진 파일을 읽을 수 없어요. JPG·PNG 파일을 확인해 주세요.")
+        out = io.BytesIO()
+        picture.save(out, "JPEG", quality=85)
+        encoded = base64.b64encode(out.getvalue()).decode("ascii")
+        with db():
+            db().execute("INSERT INTO user_avatars(user_id,image,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET image=excluded.image,updated_at=excluded.updated_at",
+                         (current_user()["id"], encoded, storage.utcnow()))
+        return jsonify(session_view())
+
+    @app.delete("/api/profile/photo")
+    @signed_in
+    def delete_avatar():
+        with db():
+            db().execute("DELETE FROM user_avatars WHERE user_id=?", (current_user()["id"],))
+        return jsonify(session_view())
+
+    @app.get("/api/avatar/<user_id>")
+    @signed_in
+    def avatar(user_id):
+        me = current_user()["id"]
+        if user_id != me and not db().execute(
+                "SELECT 1 FROM guardians WHERE status='accepted' AND ((sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?))",
+                (me, user_id, user_id, me)).fetchone():
+            raise APIError("사진을 찾을 수 없어요.", 404)
+        row = db().execute("SELECT image FROM user_avatars WHERE user_id=?", (user_id,)).fetchone()
+        if not row:
+            raise APIError("사진을 찾을 수 없어요.", 404)
+        response = Response(base64.b64decode(row["image"]), mimetype="image/jpeg")
+        return response
 
     @app.get("/api/settings")
     @signed_in
@@ -493,8 +570,11 @@ def create_app(test_config=None):
         status = row["status"]
         if status == "pending" and datetime.fromisoformat(row["created_at"]) < datetime.now(timezone.utc) - timedelta(days=7):
             status = "expired"
+        person_view = storage.user_view(person)
+        if person_view:
+            person_view["avatar_url"] = avatar_url(person_view["id"]) if status == "accepted" else None
         return {"id": row["id"], "status": status, "direction": "outgoing" if outgoing else "incoming",
-                "person": storage.user_view(person), "created_at": row["created_at"]}
+                "person": person_view, "created_at": row["created_at"]}
 
     @app.get("/api/guardians")
     @signed_in
@@ -503,15 +583,12 @@ def create_app(test_config=None):
         rows = db().execute("SELECT * FROM guardians WHERE sender_id=? OR recipient_id=? ORDER BY created_at DESC", (uid, uid)).fetchall()
         return jsonify(guardians=[guardian_view(row) for row in rows])
 
-    @app.post("/api/guardians")
-    @signed_in
-    def invite_guardian():
-        throttle("guardian", 20, 3600)
-        email = text(body().get("email"), "보호자 이메일", 254).lower()
+    def request_guardian(uid, raw_email):
+        """uid가 입력한 이메일의 사용자에게 보호자 연결 요청을 만든다. 문제가 있으면 APIError."""
+        email = text(raw_email, "보호자 이메일", 254).lower()
         target = db().execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
         if not target:
             raise APIError("귀가ON에 가입된 보호자 이메일인지 확인해 주세요.", 404)
-        uid = current_user()["id"]
         if target["id"] == uid:
             raise APIError("다른 사람을 보호자로 등록해 주세요.")
         prior = db().execute("SELECT * FROM guardians WHERE sender_id=? AND recipient_id=? AND status IN ('pending','accepted') ORDER BY created_at DESC", (uid, target["id"])).fetchone()
@@ -520,7 +597,13 @@ def create_app(test_config=None):
         gid, now = uuid4().hex, storage.utcnow()
         with db():
             db().execute("INSERT INTO guardians VALUES(?,?,?,?,?,?)", (gid, uid, target["id"], "pending", now, now))
-        row = db().execute("SELECT * FROM guardians WHERE id=?", (gid,)).fetchone()
+        return db().execute("SELECT * FROM guardians WHERE id=?", (gid,)).fetchone()
+
+    @app.post("/api/guardians")
+    @signed_in
+    def invite_guardian():
+        throttle("guardian", 20, 3600)
+        row = request_guardian(current_user()["id"], body().get("email"))
         return jsonify(guardian=guardian_view(row)), 201
 
     @app.patch("/api/guardians/<gid>")
@@ -568,10 +651,11 @@ def create_app(test_config=None):
         "departure": "{name}님이 귀가를 시작했어요.",
         "arrival": "{name}님이 안전하게 도착했어요.",
         "ended": "{name}님이 귀가 안내를 종료했어요.",
-        "sos": "{name}님이 도움을 요청했어요! 바로 연락해 주세요.",
-        "hazard": "{name}님이 귀가 경로에서 주의 구간을 확인했어요.",
-        "deviation": "{name}님이 경로를 벗어났는데 확인 요청에 응답이 없어요. 연락해 보세요.",
-        "delay": "{name}님의 귀가가 지연되는데 확인 요청에 응답이 없어요. 연락해 보세요.",
+        # 링크가 붙는 문구는 이름이 한글 10자여도 SMS 한도(90바이트)에 들어가도록 짧게 쓴다.
+        "sos": "{name}님이 도움을 요청했어요!",
+        "hazard": "{name}님이 주의구간에 있어요.",
+        "deviation": "{name}님이 경로를 벗어났어요.",
+        "delay": "{name}님의 귀가가 늦어져요.",
     }
 
     SMS_LINK_KINDS = {"departure", "sos", "hazard", "deviation", "delay"}
@@ -580,7 +664,7 @@ def create_app(test_config=None):
         base = os.environ.get("COMEBACK_PUBLIC_URL", "").strip().rstrip("/")
         if not base.startswith(("https://", "http://")):
             base = "https://comeback-on.kr"
-        return f"{base}/?screen=guardian-view&notification={notification_id}"
+        return f"{base}/n/{notification_id[:12]}"
 
     def deliver_sms(sender_id, notifications, kind):
         """앱 푸시를 먼저 시도하고, 푸시가 가지 않은 보호자에게만 문자를 요청한다.
@@ -1012,6 +1096,17 @@ def create_app(test_config=None):
             return jsonify(routing.compare_routes(body()))
         except ValueError as error:
             raise APIError(str(error), 400)
+
+    @app.get("/n/<token>")
+    def short_notification_link(token):
+        """문자 속 짧은 링크를 알림 화면 주소로 연결한다. 알림 내용은 보호자 로그인 뒤 API에서만 보인다."""
+        full = ""
+        if re.fullmatch(r"[a-f0-9]{12}", token):
+            row = db().execute("SELECT id FROM notifications WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1", (token + "%",)).fetchone()
+            full = row["id"] if row else ""
+        response = redirect("/?screen=guardian-view" + (f"&notification={full}" if full else ""), 302)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/")
     def index():

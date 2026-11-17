@@ -67,6 +67,10 @@ CREATE TABLE IF NOT EXISTS sms_log (
  kind TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sms_log_sender_time ON sms_log(sender_id, created_at);
+CREATE TABLE IF NOT EXISTS user_avatars (
+ user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+ image TEXT NOT NULL, updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS phone_codes (
  phone TEXT PRIMARY KEY, code_hash TEXT NOT NULL, expires_at INTEGER NOT NULL,
  attempts INTEGER NOT NULL DEFAULT 0, sent_at INTEGER NOT NULL,

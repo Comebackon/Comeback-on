@@ -165,7 +165,7 @@ def test_sos_texts_only_guardians_who_registered_a_number(app, configured, sent)
     text = sent[0][1]
     stored = sqlite3.connect(app.config["DATABASE"]).execute(
         "SELECT n.id FROM notifications n JOIN users u ON u.id=n.recipient_id WHERE u.email='ready@example.test'").fetchone()[0]
-    assert text == f"[귀가ON] owner님이 도움을 요청했어요! 바로 연락해 주세요.\nhttps://comeback-on.kr/?screen=guardian-view&notification={stored}"
+    assert text == f"[귀가ON] owner님이 도움을 요청했어요!\nhttps://comeback-on.kr/n/{stored[:12]}"
     assert not any(ch in text for ch in ("위도", "경도", "37.", "126."))
     log = sqlite3.connect(app.config["DATABASE"]).execute("SELECT kind,status FROM sms_log").fetchall()
     assert log == [("sos", "sent")]
@@ -234,15 +234,15 @@ def test_each_situation_gets_its_own_wording(app, configured, sent):
     first_lines = [text.split("\n")[0] for _, text in sent]
     assert first_lines == [
         "[귀가ON] 하늘님이 귀가를 시작했어요.",
-        "[귀가ON] 하늘님이 귀가 경로에서 주의 구간을 확인했어요.",
-        "[귀가ON] 하늘님이 경로를 벗어났는데 확인 요청에 응답이 없어요. 연락해 보세요.",
-        "[귀가ON] 하늘님의 귀가가 지연되는데 확인 요청에 응답이 없어요. 연락해 보세요.",
+        "[귀가ON] 하늘님이 주의구간에 있어요.",
+        "[귀가ON] 하늘님이 경로를 벗어났어요.",
+        "[귀가ON] 하늘님의 귀가가 늦어져요.",
         "[귀가ON] 하늘님이 안전하게 도착했어요.",
     ]
     assert len(set(first_lines)) == len(first_lines)
     assert not any("테스트 목적지" in text or "테스트 경로" in text for _, text in sent)
     # 확인할 내용이 있는 알림에는 링크가 붙고, 도착 알림에는 붙지 않는다.
-    assert all("\nhttps://comeback-on.kr/?screen=guardian-view&notification=" in text for _, text in sent[:4])
+    assert all("\nhttps://comeback-on.kr/n/" in text for _, text in sent[:4])
     assert "\n" not in sent[4][1]
 
 
@@ -252,7 +252,9 @@ def test_link_opens_only_for_the_guardian_it_was_sent_to(app, configured, sent):
     register_phone(guardian)
     change(owner, "POST", "/api/sos", {})
     link = sent[0][1].split("\n")[1]
-    nid = link.rsplit("notification=", 1)[1]
+    token = link.rsplit("/n/", 1)[1]
+    assert len(token) == 12
+    nid = sqlite3.connect(app.config["DATABASE"]).execute("SELECT id FROM notifications WHERE id LIKE ?", (token + "%",)).fetchone()[0]
     assert len(nid) == 32
     opened = guardian.get(f"/api/notifications/{nid}")
     assert opened.status_code == 200 and opened.get_json()["notification"]["kind"] == "sos"
@@ -267,10 +269,10 @@ def test_link_base_can_be_configured_and_falls_back_safely(app, configured, sent
     register_phone(guardian)
     monkeypatch.setenv("COMEBACK_PUBLIC_URL", "https://example.test/")
     change(owner, "POST", "/api/sos", {})
-    assert sent[-1][1].split("\n")[1].startswith("https://example.test/?screen=guardian-view&notification=")
+    assert sent[-1][1].split("\n")[1].startswith("https://example.test/n/")
     monkeypatch.setenv("COMEBACK_PUBLIC_URL", "javascript:alert(1)")
     change(owner, "POST", "/api/sos", {})
-    assert sent[-1][1].split("\n")[1].startswith("https://comeback-on.kr/?screen=guardian-view&notification=")
+    assert sent[-1][1].split("\n")[1].startswith("https://comeback-on.kr/n/")
 
 
 @pytest.fixture
@@ -337,3 +339,41 @@ def test_push_to_one_guardian_still_texts_the_other(app, configured, sent, monke
     sms = change(owner, "POST", f"/api/trips/{tid}/events", {"type": "hazard"}).get_json()["notification"]["sms"]
     assert sms == {"status": "sent", "sent": 1, "failed": 0, "no_phone": 0, "push": 1}
     assert [number for number, _ in sent] == ["01033334444"]
+
+
+def test_short_link_resolves_to_the_notification_screen(app, configured, sent):
+    owner, guardian = user(app, "owner"), user(app, "guardian")
+    connect(owner, "guardian", guardian)
+    register_phone(guardian)
+    change(owner, "POST", "/api/sos", {})
+    token = sent[0][1].split("/n/")[1]
+    stored = sqlite3.connect(app.config["DATABASE"]).execute("SELECT id FROM notifications WHERE id LIKE ?", (token + "%",)).fetchone()[0]
+    anonymous = app.test_client().get(f"/n/{token}")
+    assert anonymous.status_code == 302
+    assert anonymous.headers["Location"] == f"/?screen=guardian-view&notification={stored}"
+    assert anonymous.headers["Cache-Control"] == "no-store"
+    for bad in ("zzzzzzzzzzzz", "abc", "0" * 12, "A" * 12):
+        missing = app.test_client().get(f"/n/{bad}")
+        assert missing.status_code in (302, 404)
+        assert missing.headers.get("Location", "/?screen=guardian-view") == "/?screen=guardian-view"
+
+
+def test_nickname_is_limited_to_ten_characters(app):
+    client = app.test_client()
+    def register(nickname, email):
+        return client.post("/api/auth/register", json={"email": email, "password": "testing-12345", "nickname": nickname})
+    assert register("가나다라마바사아자차", "a@example.test").status_code == 201
+    assert register("가나다라마바사아자차카", "b@example.test").status_code == 400
+
+
+def test_every_linked_message_fits_one_sms_even_with_the_longest_name(app, configured, sent):
+    owner, guardian = user(app, "가나다라마바사아자차"), user(app, "guardian")
+    connect(owner, "guardian", guardian)
+    register_phone(guardian)
+    assert change(owner, "POST", "/api/sos", {}).status_code == 200
+    tid = trip_with_guardian(owner)
+    for kind in ("hazard", "deviation", "delay"):
+        assert change(owner, "POST", f"/api/trips/{tid}/events", {"type": kind}).status_code == 200
+    linked = [text for _, text in sent if "/n/" in text]
+    assert len(linked) == 5  # SOS, 출발, 주의구간, 경로이탈, 지연
+    assert all(len(text.encode("euc-kr")) <= 90 for text in linked), [len(t.encode("euc-kr")) for t in linked]
