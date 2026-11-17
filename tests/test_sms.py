@@ -3,7 +3,9 @@ import hashlib
 import hmac
 import io
 import json
+import re
 import sqlite3
+import zlib
 from datetime import datetime, timezone
 from urllib.error import HTTPError
 
@@ -34,10 +36,30 @@ def sent(monkeypatch):
     return calls
 
 
+def phone_proof(app, phone):
+    """인증 문자를 가로채 코드를 읽고 verify까지 마쳐 증표를 돌려준다."""
+    client, box, original = app.test_client(), [], sms_service.send
+    sms_service.send = lambda to, text, timeout=5: box.append((to, text)) or {"status": "sent"}
+    try:
+        assert client.post("/api/phone/send", json={"phone": phone}).status_code == 200
+    finally:
+        sms_service.send = original
+    code = re.search(r"\d{6}", box[0][1]).group()
+    response = client.post("/api/phone/verify", json={"phone": phone, "code": code})
+    assert response.status_code == 200, response.get_json()
+    return response.get_json()["proof"]
+
+
 def user(app, name):
     client = app.test_client()
-    response = client.post("/api/auth/register", json={"email": f"{name}@example.test", "password": "testing-12345", "nickname": name})
+    payload = {"email": f"{name}@example.test", "password": "testing-12345", "nickname": name}
+    if sms_service.configured():
+        phone = f"010{zlib.crc32(name.encode()) % 90000000 + 10000000}"
+        payload.update(phone=phone, phone_proof=phone_proof(app, phone), consent=True)
+    response = client.post("/api/auth/register", json=payload)
     assert response.status_code == 201, response.get_json()
+    if sms_service.configured():  # 이 파일의 시나리오는 번호가 없는 상태에서 시작한다.
+        assert change(client, "DELETE", "/api/sms-contact").status_code == 200
     return client
 
 
@@ -51,8 +73,13 @@ def connect(owner, guardian_name, guardian):
     assert change(guardian, "PATCH", f"/api/guardians/{gid}", {"action": "accept"}).status_code == 200
 
 
-def register_phone(client, phone="010-1234-5678"):
-    response = change(client, "PUT", "/api/sms-contact", {"phone": phone, "consent": True})
+def register_phone(client, phone="010-1234-5678", app=None):
+    if sms_service.configured():
+        app = app or client.application
+        normalized = sms_service.normalize_phone(phone)
+        response = change(client, "PUT", "/api/sms-contact", {"phone": phone, "consent": True, "phone_proof": phone_proof(app, normalized)})
+    else:
+        response = change(client, "PUT", "/api/sms-contact", {"phone": phone, "consent": True})
     assert response.status_code == 200, response.get_json()
     return response.get_json()
 

@@ -2,6 +2,7 @@
 
 import io
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -229,7 +230,7 @@ def create_app(test_config=None):
             "web_push": account_storage_ready, "email_login": account_storage_ready, "phone_login": False,
             "account_storage_ready": account_storage_ready,
             "social_login": {"kakao": False, "naver": False, "apple": False},
-            "sms": sms_service.configured(), "road_graph": bool(graph and Path(graph).is_file()),
+            "sms": sms_service.configured(), "phone_verification": sms_service.configured(), "road_graph": bool(graph and Path(graph).is_file()),
             "tmap": bool(get_app_key()),
             "report_photos": True,
             "background_location": False,
@@ -267,6 +268,88 @@ def create_app(test_config=None):
         g.user = row
         return jsonify(session_view())
 
+    OTP_TTL = 300
+    OTP_RESEND = 60
+    OTP_PROOF_TTL = 900
+    OTP_MAX_TRIES = 5
+
+    def otp_hash(phone, value):
+        key = str(app.config["SECRET_KEY"]).encode()
+        return hmac.new(key, f"{phone}:{value}".encode(), hashlib.sha256).hexdigest()
+
+    def consume_phone_proof(phone, proof):
+        """verify 단계에서 받은 증표가 이 번호의 것이고 유효하면 한 번만 쓰게 하고 true."""
+        if not isinstance(proof, str) or not proof:
+            return False
+        row = db().execute("SELECT proof_hash, proof_expires_at FROM phone_codes WHERE phone=?", (phone,)).fetchone()
+        if not row or not row["proof_hash"] or int(row["proof_expires_at"] or 0) < int(time.time()):
+            return False
+        if not hmac.compare_digest(row["proof_hash"], otp_hash(phone, "proof:" + proof)):
+            return False
+        db().execute("DELETE FROM phone_codes WHERE phone=?", (phone,))
+        return True
+
+    @app.post("/api/phone/send")
+    def phone_send():
+        if not sms_service.configured():
+            raise APIError("문자 인증을 지금은 사용할 수 없어요.", 503)
+        throttle("phone-send", 6, 600)
+        phone = sms_service.normalize_phone(body().get("phone"))
+        if not phone:
+            raise APIError("휴대폰 번호를 010으로 시작하는 숫자로 입력해 주세요.")
+        now = int(time.time())
+        previous = db().execute("SELECT sent_at FROM phone_codes WHERE phone=?", (phone,)).fetchone()
+        if previous and now - int(previous["sent_at"]) < OTP_RESEND:
+            raise APIError(f"인증번호는 {OTP_RESEND}초 뒤에 다시 받을 수 있어요.", 429)
+        if db().execute("SELECT count(*) FROM phone_sends WHERE phone=? AND sent_at>?", (phone, now - 3600)).fetchone()[0] >= 5:
+            raise APIError("이 번호로 인증번호를 너무 많이 요청했어요. 1시간 뒤에 다시 시도해 주세요.", 429)
+        try:
+            daily = max(1, int(os.environ.get("SMS_OTP_DAILY_LIMIT", "100")))
+        except ValueError:
+            daily = 100
+        if db().execute("SELECT count(*) FROM phone_sends WHERE sent_at>?", (now - 86400,)).fetchone()[0] >= daily:
+            raise APIError("오늘 인증 문자 한도를 넘었어요. 내일 다시 시도해 주세요.", 429)
+        code = f"{secrets.randbelow(1000000):06d}"
+        with db():
+            db().execute("DELETE FROM phone_sends WHERE sent_at<?", (now - 2 * 86400,))
+            db().execute("DELETE FROM phone_codes WHERE expires_at<? AND (proof_expires_at IS NULL OR proof_expires_at<?)", (now - 3600, now))
+            db().execute("INSERT INTO phone_sends(id,phone,sent_at) VALUES(?,?,?)", (uuid4().hex, phone, now))
+            db().execute("INSERT INTO phone_codes(phone,code_hash,expires_at,attempts,sent_at,proof_hash,proof_expires_at) VALUES(?,?,?,?,?,NULL,NULL) "
+                         "ON CONFLICT(phone) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at,attempts=0,sent_at=excluded.sent_at,proof_hash=NULL,proof_expires_at=NULL",
+                         (phone, otp_hash(phone, code), now + OTP_TTL, 0, now))
+        result = sms_service.send(phone, f"[귀가ON] 인증번호 {code} (5분 안에 입력)")
+        if result.get("status") != "sent":
+            with db():
+                db().execute("DELETE FROM phone_codes WHERE phone=?", (phone,))
+            raise APIError("인증 문자를 보내지 못했어요. 번호를 확인하고 잠시 후 다시 시도해 주세요.", 502)
+        return jsonify(sent=True, expires_in=OTP_TTL, resend_after=OTP_RESEND)
+
+    @app.post("/api/phone/verify")
+    def phone_verify():
+        throttle("phone-verify", 20, 600)
+        data = body()
+        phone = sms_service.normalize_phone(data.get("phone"))
+        code = str(data.get("code") or "").strip()
+        wrong = APIError("인증번호가 맞지 않아요. 다시 확인해 주세요.", 400)
+        if not phone or not re.fullmatch(r"\d{6}", code):
+            raise wrong
+        now = int(time.time())
+        row = db().execute("SELECT * FROM phone_codes WHERE phone=?", (phone,)).fetchone()
+        if not row or row["proof_hash"]:
+            raise APIError("인증번호를 먼저 받아 주세요.", 400)
+        if int(row["expires_at"]) < now:
+            raise APIError("인증번호 시간이 지났어요. 새 인증번호를 받아 주세요.", 400)
+        if int(row["attempts"]) >= OTP_MAX_TRIES:
+            raise APIError("틀린 횟수가 많아요. 새 인증번호를 받아 주세요.", 429)
+        if not hmac.compare_digest(row["code_hash"], otp_hash(phone, code)):
+            with db():
+                db().execute("UPDATE phone_codes SET attempts=attempts+1 WHERE phone=?", (phone,))
+            raise wrong
+        proof = secrets.token_urlsafe(24)
+        with db():
+            db().execute("UPDATE phone_codes SET proof_hash=?,proof_expires_at=? WHERE phone=?", (otp_hash(phone, "proof:" + proof), now + OTP_PROOF_TTL, phone))
+        return jsonify(verified=True, proof=proof)
+
     @app.post("/api/auth/register")
     def register():
         throttle("register", 5, 600)
@@ -280,10 +363,22 @@ def create_app(test_config=None):
             raise APIError("비밀번호는 8~128자로 입력해 주세요.")
         if db().execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
             raise APIError("이미 가입된 이메일이에요.", 409)
+        phone = ""
+        if sms_service.configured():
+            # 문자 서비스가 켜져 있으면 휴대폰 번호는 문자 인증을 마쳐야 가입할 수 있다.
+            if data.get("consent") is not True:
+                raise APIError("문자 알림 수신에 동의해 주세요.")
+            phone = sms_service.normalize_phone(data.get("phone"))
+            if not phone:
+                raise APIError("휴대폰 번호를 010으로 시작하는 숫자로 입력해 주세요.")
         uid = uuid4().hex
         with db():
+            if phone and not consume_phone_proof(phone, data.get("phone_proof")):
+                raise APIError("휴대폰 번호 인증을 먼저 완료해 주세요.", 400)
             db().execute("INSERT INTO users(id,email,nickname,password_hash,created_at) VALUES(?,?,?,?,?)",
                          (uid, email, nickname, generate_password_hash(password), storage.utcnow()))
+            if phone:
+                db().execute("INSERT INTO sms_contacts(user_id,phone,consented_at) VALUES(?,?,?)", (uid, phone, storage.utcnow()))
         return authenticate(db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone(), data.get("remember", True) is True), 201
 
     @app.post("/api/auth/login")
@@ -574,6 +669,8 @@ def create_app(test_config=None):
         if not phone:
             raise APIError("휴대폰 번호를 010으로 시작하는 숫자로 입력해 주세요.")
         with db():
+            if sms_service.configured() and not consume_phone_proof(phone, data.get("phone_proof")):
+                raise APIError("휴대폰 번호 인증을 먼저 완료해 주세요.", 400)
             db().execute("INSERT INTO sms_contacts(user_id,phone,consented_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET phone=excluded.phone,consented_at=excluded.consented_at",
                          (current_user()["id"], phone, storage.utcnow()))
         return jsonify(**sms_contact_view())

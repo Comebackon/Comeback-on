@@ -67,6 +67,15 @@ CREATE TABLE IF NOT EXISTS sms_log (
  kind TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sms_log_sender_time ON sms_log(sender_id, created_at);
+CREATE TABLE IF NOT EXISTS phone_codes (
+ phone TEXT PRIMARY KEY, code_hash TEXT NOT NULL, expires_at INTEGER NOT NULL,
+ attempts INTEGER NOT NULL DEFAULT 0, sent_at INTEGER NOT NULL,
+ proof_hash TEXT, proof_expires_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS phone_sends (
+ id TEXT PRIMARY KEY, phone TEXT NOT NULL, sent_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS phone_sends_time ON phone_sends(sent_at);
 CREATE TABLE IF NOT EXISTS reports (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
  type TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, address TEXT NOT NULL,
