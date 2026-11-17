@@ -590,9 +590,11 @@ def compare_routes(payload):
         routes.append(safe)
     same = safe is None and warning in SAFE_IS_SHORTEST_MESSAGES
     if same:
-        # 비교를 마쳤고 우회할 이유가 없을 때: 같은 경로를 안심 경로로도 고를 수 있게 한다. 경로 자체는 최단 경로와 같다.
-        twin = copy.deepcopy(base)
-        twin.update({"id": "safe", "name": "안심 경로", "same_as_shortest": True, "source": "TMAP 후보 비교 · 최단 경로와 동일", "selection_mode": "same_as_shortest"})
-        twin["reasons"] = [SAFE_IS_SHORTEST_MESSAGES[warning]] + [r for r in base.get("reasons", []) if r != SAFE_IS_SHORTEST_MESSAGES[warning]]
-        routes.append(twin)
+        # 비교를 마쳤고 우회할 이유가 없을 때: 최단 경로가 곧 안심 경로이므로 하나로 합쳐 안내한다.
+        merged = copy.deepcopy(base)
+        merged.update({"id": "safe", "name": "안심 경로 · 최단 경로", "same_as_shortest": True, "source": "TMAP 후보 비교 · 최단 경로와 동일", "selection_mode": "same_as_shortest"})
+        merged["reasons"] = [SAFE_IS_SHORTEST_MESSAGES[warning]] + [r for r in base.get("reasons", []) if r != SAFE_IS_SHORTEST_MESSAGES[warning]]
+        routes = [merged]
+    elif safe:
+        routes = [safe, base]  # 안심 경로를 맨 위에 둔다.
     return {"routes": routes, "safe_available": safe is not None or same, "safe_is_shortest": same, "safe_message": SAFE_IS_SHORTEST_MESSAGES.get(warning, "") if same else "", "warnings": [warning] if warning else [], "detour": {"percent": percentage, "max_extra_minutes": max_extra, "max_duration_s": math.floor(limit)}, "explanation_mode": "data", "notice": "등록 시설의 존재는 현장 안전을 보장하지 않아요. 데이터가 없는 구간을 위험하다고 판단하지 않아요."}
