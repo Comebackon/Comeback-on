@@ -222,3 +222,13 @@ def test_alert_message_is_stored_and_a_new_trip_can_alert_again(app):
     second = trip(owner, True)
     assert change(owner, "POST", f"/api/trips/{second}/events", {"type": "deviation"}).get_json()["notification"]["in_app"] == "recorded"
     assert change(owner, "POST", f"/api/trips/{second}/events", {"type": "bogus"}).status_code == 400
+
+
+@pytest.mark.parametrize("action", ["finish", "cancel"])
+def test_ending_trip_erases_route_coordinates(app, action):
+    owner = user(app, "erase")
+    tid = trip(owner, False)
+    assert change(owner, "PATCH", f"/api/trips/{tid}", {"action": action}).status_code == 200
+    import sqlite3
+    raw = sqlite3.connect(app.config["DATABASE"]).execute("SELECT route FROM trips WHERE id=?", (tid,)).fetchone()[0]
+    assert raw == "{}"

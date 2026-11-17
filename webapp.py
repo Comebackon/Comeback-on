@@ -886,7 +886,7 @@ def create_app(test_config=None):
             elif action == "stop_sharing":
                 db().execute("UPDATE trips SET share_location=0,lat=NULL,lon=NULL,location_updated_at=NULL WHERE id=?", (tid,))
             elif action in {"finish", "cancel"}:
-                db().execute("UPDATE trips SET status=?,share_location=0,lat=NULL,lon=NULL,location_updated_at=NULL,finished_at=? WHERE id=?", ("finished" if action == "finish" else "cancelled", storage.utcnow(), tid))
+                db().execute("UPDATE trips SET status=?,share_location=0,lat=NULL,lon=NULL,location_updated_at=NULL,route=?,finished_at=? WHERE id=?", ("finished" if action == "finish" else "cancelled", "{}", storage.utcnow(), tid))
                 notice = record_notification(row, "arrival" if action == "finish" else "ended", "목적지에 도착했어요." if action == "finish" else "귀가 안내를 종료했어요.")
             else:
                 raise APIError("귀가 처리 방법을 확인해 주세요.")
