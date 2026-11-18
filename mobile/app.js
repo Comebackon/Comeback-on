@@ -35,7 +35,7 @@ const paths = {
  external:'<path d="M13 3h8v8m0-8L11 13M9 3H3v18h18v-6"/>'
 };
 const icon = (name, cls='') => `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.info}</svg>`;
-const brand = () => '<button class="brand" data-action="nav" data-screen="home" aria-label="귀가 ON 홈"><img src="/static/logo.svg" alt="">귀가 <em>ON</em></button>';
+const brand = () => '<button class="brand" data-action="nav" data-screen="home" aria-label="귀가 ON 홈"><img src="/static/logo-wordmark.png" alt="귀가 ON"></button>';
 const notice = (text, tone='') => `<div class="notice ${tone}">${icon(tone==='error'?'alert':'info')}<span>${esc(text)}</span></div>`;
 const loading = text => `<div class="loading"><span class="spinner"></span>${esc(text || '불러오는 중이에요.')}</div>`;
 const empty = (text,name='bookmark') => `<div class="empty">${icon(name)}${esc(text)}</div>`;
