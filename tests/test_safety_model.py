@@ -50,6 +50,38 @@ class TestLogistic:
         assert sm.route_risk([[37.0, 127.0]], lambda lat, lon: []) is None
 
 
+class TestCautionZones:
+    COORDS = [[37.0, 127.0], [37.0, 127.003]]  # 약 266m = 6개 구간
+
+    def test_high_crime_and_no_facilities_creates_one_merged_zone(self, monkeypatch):
+        monkeypatch.setattr(sm, "crime_grade_at", lambda lat, lon: 5)
+        risk, zones = sm.assess_route(self.COORDS, lambda lat, lon: [])
+        assert len(zones) == 1 and zones[0]["percent"] >= 30 and zones[0]["length_m"] >= 250
+        assert risk["level"] == "높음"
+
+    def test_facilities_or_low_crime_create_no_zone(self, monkeypatch):
+        monkeypatch.setattr(sm, "crime_grade_at", lambda lat, lon: 5)
+        assert sm.assess_route(self.COORDS, lambda lat, lon: [{"type": "CCTV"}] * 3 + [{"type": "비상벨"}])[1] == []
+        monkeypatch.setattr(sm, "crime_grade_at", lambda lat, lon: 1)
+        assert sm.assess_route(self.COORDS, lambda lat, lon: [])[1] == []
+
+    def test_unknown_crime_grade_never_triggers_a_zone(self, monkeypatch):
+        monkeypatch.setattr(sm, "crime_grade_at", lambda lat, lon: None)
+        assert sm.assess_route(self.COORDS, lambda lat, lon: [])[1] == []
+
+    def test_zone_stretches_split_around_covered_segments(self, monkeypatch):
+        monkeypatch.setattr(sm, "crime_grade_at", lambda lat, lon: 5)
+        covered = lambda lat, lon: [{"type": "CCTV"}] * 3 + [{"type": "비상벨"}] if 127.001 < lon < 127.0015 else []
+        assert len(sm.assess_route(self.COORDS, covered)[1]) == 2
+
+    def test_zone_count_is_capped(self, monkeypatch):
+        monkeypatch.setattr(sm, "crime_grade_at", lambda lat, lon: 5)
+        calls = iter(range(10 ** 6))
+        flip = lambda lat, lon: [] if next(calls) % 2 == 0 else [{"type": "CCTV"}] * 3 + [{"type": "비상벨"}]
+        long_route = [[37.0, 127.0], [37.0, 127.06]]
+        assert len(sm.assess_route(long_route, flip)[1]) == sm.MAX_CAUTION_ZONES
+
+
 FACTS = [{"id": "safe", "duration_s": 600, "distance_m": 700, "facility_counts": {"CCTV": 3, "비상벨": 1}, "risk": {"percent": 12}},
          {"id": "basic", "duration_s": 480, "distance_m": 560, "facility_counts": {"CCTV": 1}, "risk": {"percent": 27}}]
 

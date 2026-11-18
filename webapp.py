@@ -845,8 +845,16 @@ def create_app(test_config=None):
                 continue
             if 0 <= index < len(checked_coords) and label:
                 steps.append({"index": index, "lat": slat, "lon": slon, "turn": turn, "text": label})
+        zones = []
+        for zone in (route.get("caution_zones") if isinstance(route.get("caution_zones"), list) else [])[:20]:
+            try:
+                zlat, zlon = coordinates({"lat": zone["lat"], "lon": zone["lon"]})
+                zones.append({"lat": zlat, "lon": zlon, "length_m": max(0, min(5000, round(float(zone.get("length_m", 50))))),
+                              "percent": max(0, min(100, round(float(zone.get("percent", 0)))))})
+            except (KeyError, TypeError, ValueError, APIError):
+                continue
         route = {"id": text(route.get("id", "basic"), "경로 종류", 30), "name": text(route.get("name", "기본 경로"), "경로 이름", 60),
-                 "coordinates": checked_coords, "duration_s": duration, "distance_m": distance, "steps": steps}
+                 "coordinates": checked_coords, "duration_s": duration, "distance_m": distance, "steps": steps, "caution_zones": zones}
         share = data.get("share_location", False)
         if not isinstance(share, bool):
             raise APIError("위치 공유 여부를 확인해 주세요.")

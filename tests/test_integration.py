@@ -246,6 +246,20 @@ def test_route_steps_are_validated_and_stored(app):
     assert [(s["index"], s["text"]) for s in steps] == [(1, "우회전")]
 
 
+def test_caution_zones_are_validated_and_stored(app):
+    owner = user(app, "caution")
+    route = {"id": "safe", "name": "안심 경로", "coordinates": [[37.479, 126.929], [37.48, 126.93]], "distance_m": 200, "duration_s": 180,
+             "caution_zones": [{"lat": 37.4795, "lon": 126.9295, "length_m": 120.4, "percent": 41.6},
+                               {"lat": 99, "lon": 126.9295, "length_m": 50, "percent": 40},
+                               {"lat": "x", "lon": 1},
+                               {"lat": 37.48, "lon": 126.93, "length_m": 99999, "percent": 500}]}
+    response = change(owner, "POST", "/api/trips", {"destination": {"name": "목적지", "lat": 37.48, "lon": 126.93}, "route": route, "share_location": False})
+    assert response.status_code == 201, response.get_json()
+    zones = response.get_json()["trip"]["route"]["caution_zones"]
+    assert zones == [{"lat": 37.4795, "lon": 126.9295, "length_m": 120, "percent": 42},
+                     {"lat": 37.48, "lon": 126.93, "length_m": 5000, "percent": 100}]
+
+
 def test_sos_location_is_stored_only_for_the_guardian_and_only_when_sent(app, monkeypatch):
     import routing
     monkeypatch.setattr(routing, "reverse_geocode", lambda lat, lon: "")

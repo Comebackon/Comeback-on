@@ -43,3 +43,8 @@
 .ai-summary{margin-top:12px;padding:12px 14px;border-radius:14px;background:#f4f6fb;display:flex;flex-direction:column;gap:6px}
 .ai-summary[hidden]{display:none}
 .ai-summary p{margin:0;font-size:14px;line-height:1.5;color:#1b2a44}
+
+.risk-chip.caution{margin-left:6px;background:#ffe9d1;color:#8a4a00}
+.caution-card{display:flex;gap:10px;align-items:flex-start;margin-top:12px;padding:12px 14px;border-radius:14px;background:#fff1de;border:1px solid #f2c48d}
+.caution-card[hidden]{display:none}
+.caution-card strong{color:#8a4a00}

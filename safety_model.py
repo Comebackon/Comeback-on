@@ -97,14 +97,13 @@ def facility_counts(items):
     return Counter(item["type"] for item in items if "type" in item)
 
 
-def route_risk(coordinates, nearby):
-    """경로를 50m 이하 구간으로 나눠 길이 가중 평균 위험 지표를 구한다.
+# 이 값 이상이면 "주의 구간"으로 안내한다. 범죄 등급이 높은 구에서 주변 시설이 거의 없을 때 넘는다.
+CAUTION_AT = 0.30
+MAX_CAUTION_ZONES = 20
 
-    nearby(lat, lon) → 그 지점 50m 안의 시설 목록.
-    """
+
+def _segments(coordinates):
     import routing
-    total = weighted = 0.0
-    crimes = []
     for a, b in zip(coordinates, coordinates[1:]):
         length = routing.distance_m(a, b)
         if length <= 0:
@@ -112,16 +111,42 @@ def route_risk(coordinates, nearby):
         parts = max(1, math.ceil(length / 50))
         for part in range(parts):
             mid = (a[0] + (b[0] - a[0]) * (part + .5) / parts, a[1] + (b[1] - a[1]) * (part + .5) / parts)
-            crime = crime_grade_at(*mid)
-            if crime is not None:
-                crimes.append(crime)
-            p = risk_probability(crime, facility_counts(nearby(*mid)))
-            weighted += p * length / parts
-            total += length / parts
+            yield mid, length / parts
+
+
+def assess_route(coordinates, nearby):
+    """(위험 지표 dict 또는 None, 주의 구간 목록).
+
+    주의 구간: 위험 지표가 CAUTION_AT 이상인 50m 구간이 이어진 곳. 귀가 중 그 근처에 가면 안내한다.
+    nearby(lat, lon) → 그 지점 50m 안의 시설 목록.
+    """
+    total = weighted = 0.0
+    crimes = []
+    zones, current = [], []
+
+    def close():
+        if current:
+            mid = current[len(current) // 2]
+            zones.append({"lat": round(mid[0], 6), "lon": round(mid[1], 6), "length_m": round(sum(c[2] for c in current)),
+                          "percent": round(max(c[3] for c in current) * 100)})
+            current.clear()
+
+    for mid, length in _segments(coordinates):
+        crime = crime_grade_at(*mid)
+        if crime is not None:
+            crimes.append(crime)
+        p = risk_probability(crime, facility_counts(nearby(*mid)))
+        weighted += p * length
+        total += length
+        if p >= CAUTION_AT:
+            current.append((mid[0], mid[1], length, p))
+        else:
+            close()
+    close()
     if total <= 0:
-        return None
+        return None, []
     probability = weighted / total
-    return {
+    risk = {
         "model": "logistic",
         "probability": round(probability, 3),
         "percent": round(probability * 100),
@@ -129,3 +154,8 @@ def route_risk(coordinates, nearby):
         "crime_grade": round(sum(crimes) / len(crimes), 2) if crimes else None,
         "note": "등록된 범죄 등급과 시설 정보로 계산한 상대 지표예요. 실제 범죄 발생 확률이 아니에요.",
     }
+    return risk, zones[:MAX_CAUTION_ZONES]
+
+
+def route_risk(coordinates, nearby):
+    return assess_route(coordinates, nearby)[0]
