@@ -201,7 +201,7 @@ function cautionNear(lat,lon,zones){
  zones.forEach((z,i)=>{if(!Number.isFinite(z?.lat)||!Number.isFinite(z?.lon))return;const d=Math.hypot((z.lon-lon)*111320*k,(z.lat-lat)*110540);const reach=CAUTION_MARGIN_M+(Number(z.length_m)||50)/2;if(d<=reach&&(!best||d<best.meters))best={index:i,zone:z,meters:Math.round(d)};});
  return best;
 }
-function cautionCard(){return state.caution?`<div id="caution-card" class="caution-card"><span class="turn-glyph">!</span><div class="grow"><strong>시설이 적은 구간이에요</strong><p class="caption">등록된 CCTV·비상벨이 적은 곳이에요. 자료가 없는 것일 수도 있어요. 큰길 쪽으로 걷고 주변을 살펴보세요. 불안하면 긴급 도움을 눌러요.</p></div></div>`:`<div id="caution-card" hidden></div>`;}
+function cautionCard(){return state.caution?`<div id="caution-card" class="caution-card"><span class="turn-glyph">!</span><div class="grow"><strong>시설이 적은 구간이에요</strong><p class="caption">등록된 CCTV·비상벨이 적은 곳이에요. 큰길 쪽으로 걷고 주변을 살펴보세요. 불안하면 긴급 도움을 눌러요.</p></div></div>`:`<div id="caution-card" hidden></div>`;}
 function checkCaution(lat,lon,accuracy){
  const t=state.trip;if(!t){state.caution=null;return;}if(!Number.isFinite(lat)||!Number.isFinite(lon)||accuracy>CAUTION_MAX_ACCURACY)return;
  if(tripWatch.cautionTrip!==t.id){tripWatch.cautionTrip=t.id;tripWatch.cautioned=new Set();state.caution=null;}
