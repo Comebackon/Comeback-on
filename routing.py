@@ -37,6 +37,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
+import safety_model
 from tmap_client import TmapAPIError, get_app_key, request_pedestrian_route
 
 
@@ -554,11 +555,11 @@ def _candidate_graph(candidates):
             for part in range(parts):
                 p = [a[0] + (b[0] - a[0]) * part / parts, a[1] + (b[1] - a[1]) * part / parts]
                 q = [a[0] + (b[0] - a[0]) * (part + 1) / parts, a[1] + (b[1] - a[1]) * (part + 1) / parts]
-                kinds = {item["type"] for item in nearby_facilities((p[0] + q[0]) / 2, (p[1] + q[1]) / 2, radius=50)}
-                # Positive observed support only; unknown contributes zero.
-                discount = min(.30, sum({"CCTV": .08, "가로등": .08, "비상벨": .10, "경찰시설": .10}.get(kind, 0) for kind in kinds))
+                mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
+                # 로지스틱 위험 지표: 등록 시설이 있을 때만 비용이 줄고, 미등록은 중립(1.0).
+                factor = safety_model.cost_factor(safety_model.crime_grade_at(*mid), safety_model.facility_counts(nearby_facilities(*mid, radius=50)))
                 seconds = route["duration_s"] * (length / parts) / total_length
-                segments.append((p, q, seconds, discount))
+                segments.append((p, q, seconds, 1 - factor))
         previous = "start"
         for index, (p, q, seconds, discount) in enumerate(segments):
             target = "finish" if index == len(segments) - 1 else f"{route_index}:{index}"
@@ -628,6 +629,7 @@ def compare_routes(payload):
         raise RoutingError("계산된 보행 거리가 30km를 넘어요. 가까운 목적지를 선택해 주세요.")
     base["facility_counts"], base["reasons"] = route_evidence(base["coordinates"])
     base["facility_points"] = route_facility_points(base["coordinates"])
+    base["risk"] = safety_model.route_risk(base["coordinates"], lambda lat, lon: nearby_facilities(lat, lon, radius=50, limit=500))
     if avoid_stairs:
         base["name"] = "최단 경로 · 계단 제외"
         base["reasons"].insert(0, "TMAP의 최단거리·계단 제외 옵션을 적용했어요.")
@@ -643,6 +645,7 @@ def compare_routes(payload):
     if safe:
         safe["facility_counts"], safe["reasons"] = route_evidence(safe["coordinates"])
         safe["facility_points"] = route_facility_points(safe["coordinates"])
+        safe["risk"] = safety_model.route_risk(safe["coordinates"], lambda lat, lon: nearby_facilities(lat, lon, radius=50, limit=500))
         if safe.get("selection_mode") == "provider_candidates":
             safe["reasons"].insert(0, "TMAP 경로 후보 2개의 구간별 시간과 등록 CCTV·가로등·비상벨·경찰시설의 근접 정보를 비교했어요.")
         else:

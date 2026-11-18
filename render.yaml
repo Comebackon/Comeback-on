@@ -12,6 +12,7 @@ services:
       - key: COMEBACK_COOKIE_SECURE
         value: "1"
       # TMAP_APP_KEY는 Render Environment에서 직접 등록합니다.
+      # ANTHROPIC_API_KEY(선택)를 등록하면 추천 이유를 Claude가 한 줄로 요약해요. 없으면 기본 문장을 써요.
       # free는 지도/검색 확인용입니다. 영구 디스크가 없으면 이메일 가입/로그인을 열지 않습니다.
       # 기존 유료 서비스에 계정을 유지하려면 Disk를 /var/data에 실제로 연결하고
       # COMEBACK_DATA_DIR=/var/data/comeback-on을 Environment에 추가하세요.

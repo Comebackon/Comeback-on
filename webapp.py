@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import push_service
+import route_summary
 import sms_service
 import sqlite3
 import tempfile
@@ -236,6 +237,7 @@ def create_app(test_config=None):
             "report_photos": True,
             "background_location": False,
             "automatic_alerts": True,
+            "ai_summary": route_summary.configured(),
         }
 
     def avatar_url(user_id):
@@ -1147,6 +1149,15 @@ def create_app(test_config=None):
             return jsonify(routing.compare_routes(body()))
         except ValueError as error:
             raise APIError(str(error), 400)
+
+    @app.post("/api/routes/summary")
+    def routes_summary():
+        throttle("summary", 10, 60)
+        data = body()
+        result = route_summary.summarize(data.get("routes"))
+        if result is None:
+            raise APIError("요약할 경로 정보를 확인해 주세요.", 400)
+        return jsonify(summary=result[0], source=result[1])
 
     @app.get("/n/<token>")
     def short_notification_link(token):

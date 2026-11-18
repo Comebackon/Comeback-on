@@ -34,3 +34,12 @@
 .brand img{width:auto;height:34px;object-fit:contain}
 .login-logo .brand img{width:auto;height:76px}
 .initial-loading img{width:160px;height:auto}
+
+.risk-row{margin-top:6px}
+.risk-chip{display:inline-block;padding:3px 9px;border-radius:10px;font-size:12px;font-weight:700}
+.risk-chip.low{background:#e3f4e8;color:#1f6b38}
+.risk-chip.mid{background:#fff3d6;color:#7a5a00}
+.risk-chip.high{background:#fde5e3;color:#9a2a22}
+.ai-summary{margin-top:12px;padding:12px 14px;border-radius:14px;background:#f4f6fb;display:flex;flex-direction:column;gap:6px}
+.ai-summary[hidden]{display:none}
+.ai-summary p{margin:0;font-size:14px;line-height:1.5;color:#1b2a44}
