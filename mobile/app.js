@@ -40,7 +40,7 @@ const notice = (text, tone='') => `<div class="notice ${tone}">${icon(tone==='er
 const loading = text => `<div class="loading"><span class="spinner"></span>${esc(text || '불러오는 중이에요.')}</div>`;
 const empty = (text,name='bookmark') => `<div class="empty">${icon(name)}${esc(text)}</div>`;
 const distance = m => m >= 1000 ? `${(m/1000).toFixed(1)}km` : `${Math.round(m || 0)}m`;
-const minutes = seconds => `${Math.max(1, Math.round((seconds || 0)/60))}분`;
+const minutes = seconds => { const m=Math.max(1, Math.round((seconds || 0)/60)); const h=Math.floor(m/60), r=m%60; return h?(r?`${h}시간 ${r}분`:`${h}시간`):`${m}분`; };
 const fmtTime = value => { if(!value) return '아직 갱신하지 않았어요'; const d=new Date(typeof value==='number'?value*1000:value); return Number.isNaN(d.getTime())?'확인 중':d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}); };
 const fmtDate = value => { if(!value) return ''; const d=new Date(typeof value==='number'?value*1000:value); return Number.isNaN(d.getTime())?'':d.toLocaleDateString('ko-KR',{month:'long',day:'numeric'}); };
 const getStored = (key,fallback) => {try{return JSON.parse(localStorage.getItem(key)) || fallback;}catch{return fallback;}};

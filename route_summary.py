@@ -75,6 +75,13 @@ def clean_facts(routes):
     return facts
 
 
+def _duration_text(minutes):
+    hours, rest = divmod(int(minutes), 60)
+    if not hours:
+        return f"{rest}분"
+    return f"{hours}시간 {rest}분" if rest else f"{hours}시간"
+
+
 def template_summary(facts):
     """항상 쓸 수 있는 기본 문장. LLM이 없거나 실패했을 때의 대체 문장이기도 하다."""
     def facility_text(item):
@@ -84,14 +91,14 @@ def template_summary(facts):
     first = facts[0]
     text = facility_text(first)
     if first.get("same_as_shortest"):
-        base = f"비교한 후보 중 최단 경로가 가장 알맞아 그대로 안내해요({first['minutes']}분, {first['meters']}m)."
+        base = f"비교한 후보 중 최단 경로가 가장 알맞아 그대로 안내해요({_duration_text(first['minutes'])}, {first['meters']}m)."
         return base + (f" 경로 주변 50m에 등록된 {text}을 확인했어요." if text else "")
     if len(facts) == 2:
         second = facts[1]
         extra = first["minutes"] - second["minutes"]
-        gap = f"최단 경로보다 {extra}분 더 걸리지만 " if extra > 0 else ""
+        gap = f"최단 경로보다 {_duration_text(extra)} 더 걸리지만 " if extra > 0 else ""
         return f"{gap}등록 시설 정보를 함께 비교해 안심 경로를 골랐어요." + (f" 주변 50m에 {text}이 있어요." if text else "")
-    return f"이 경로는 {first['minutes']}분, {first['meters']}m예요." + (f" 주변 50m에 등록된 {text}을 확인했어요." if text else "")
+    return f"이 경로는 {_duration_text(first['minutes'])}, {first['meters']}m예요." + (f" 주변 50m에 등록된 {text}을 확인했어요." if text else "")
 
 
 def _key(facts):
