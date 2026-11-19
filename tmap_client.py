@@ -31,7 +31,7 @@ def get_app_key():
 
 
 def request_pedestrian_route(start_lon, start_lat, end_lon, end_lat,
-                             start_name="출발지", end_name="목적지", search_option="0"):
+                             start_name="출발지", end_name="목적지", search_option="0", pass_list=None):
     """보행자 경로 GeoJSON 응답을 반환한다. 지도 표시나 안전 분석은 수행하지 않는다."""
     # TMAP 공식 보행자 옵션: 0 추천, 10 최단, 30 최단거리+계단제외.
     # 기존 호출은 0을 유지하며 모바일 앱에서 명시적으로 10/30을 선택한다.
@@ -52,6 +52,10 @@ def request_pedestrian_route(start_lon, start_lat, end_lon, end_lat,
         "resCoordType": "WGS84GEO",
         "searchOption": str(search_option),
     }
+    if pass_list:
+        # 경유지: [(lon, lat), ...] 최대 5곳. TMAP 형식은 "경도,위도_경도,위도".
+        points = [(float(lon), float(lat)) for lon, lat in pass_list][:5]
+        payload["passList"] = "_".join(f"{lon:.6f},{lat:.6f}" for lon, lat in points)
     request = Request(
         TMAP_PEDESTRIAN_URL,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

@@ -586,24 +586,104 @@ SAFE_IS_SHORTEST_MESSAGES = {
 }
 
 
+# 시설이 많은 곳을 지나가는 경유지 후보 수. 0이면 TMAP 최단·대로우선 후보만 비교한다.
+VIA_CANDIDATES = 2
+VIA_FACILITY_WEIGHT = {"CCTV": 1.0, "가로등": .5, "비상벨": 2.0, "경찰시설": 3.0}
+
+
+def _via_points(start, end, limit_ratio=1.35, count=None):
+    """출발-도착 직선 주변에서 등록 시설이 가장 많은 지점(경유지 후보). [(lat, lon, 점수)]"""
+    count = VIA_CANDIDATES if count is None else count
+    span = distance_m(start, end)
+    if count <= 0 or span < 300:
+        return []
+    k = math.cos(math.radians((start[0] + end[0]) / 2))
+    dx, dy = (end[1] - start[1]) * 111320 * k, (end[0] - start[0]) * 110540
+    ux, uy = dx / span, dy / span          # 진행 방향
+    px, py = -uy, ux                       # 수직 방향
+    scored = []
+    max_offset = min(600.0, span * .35)
+    for t in (.3, .5, .7):
+        for frac in (-1, -.5, .5, 1):
+            offset = max_offset * frac
+            x, y = dx * t + px * offset, dy * t + py * offset
+            lat, lon = start[0] + y / 110540, start[1] + x / (111320 * k)
+            if distance_m(start, (lat, lon)) + distance_m((lat, lon), end) > span * limit_ratio:
+                continue
+            try:
+                found = nearby_facilities(lat, lon, radius=100, limit=300)
+            except Exception:
+                continue
+            score = sum(VIA_FACILITY_WEIGHT.get(item.get("type"), 0) for item in found)
+            if score >= 3:
+                scored.append((score, lat, lon))
+    scored.sort(reverse=True)
+    chosen = []
+    for score, lat, lon in scored:
+        if all(distance_m((lat, lon), (c[0], c[1])) > 250 for c in chosen):
+            chosen.append((lat, lon, score))
+        if len(chosen) >= count:
+            break
+    return chosen
+
+
+def _candidate_costs(candidates):
+    """후보별 (공통 속도 기준) 총 비용. 시설이 있는 구간만 비용이 줄어든다."""
+    graph = _candidate_graph(candidates)
+    totals = defaultdict(float)
+    for edges in graph.values():
+        for edge in edges:
+            totals[int(edge.reason.rstrip("!"))] += edge.cost
+    return totals
+
+
 def _provider_candidate(base, start, end, payload, limit, avoid_stairs):
     if avoid_stairs:
         return None, "계단 제외 최단 경로를 안내해요. 계단 제외가 확인되지 않은 대로우선 후보는 비교하지 않았어요."
+    start_name = str(payload["start"].get("name") or "출발지")[:100]
+    end_name = str(payload["end"].get("name") or "목적지")[:100]
+    candidates, notes, same = [], [], False
+
+    def consider(route, kind):
+        nonlocal same
+        if route["duration_s"] > math.floor(limit) or route["distance_m"] > MAX_ROUTE_DISTANCE_M:
+            notes.append("등록 시설을 비교할 추가 경로가 설정한 우회 시간을 넘어 최단 경로를 안내해요.")
+            return
+        if route["coordinates"] == base["coordinates"] or any(route["coordinates"] == c["coordinates"] for c in candidates):
+            same = same or kind == "대로우선"
+            return
+        route["_kind"] = kind
+        candidates.append(route)
+
     try:
-        raw = request_pedestrian_route(start[1], start[0], end[1], end[0], str(payload["start"].get("name") or "출발지")[:100], str(payload["end"].get("name") or "목적지")[:100], search_option="4")
-        alternative = _tmap_route(raw)
+        consider(_tmap_route(request_pedestrian_route(start[1], start[0], end[1], end[0], start_name, end_name, search_option="4")), "대로우선")
     except (TmapAPIError, RoutingError, OSError, KeyError, TypeError, IndexError, AttributeError):
-        return None, "추가 경로 후보를 불러오지 못했어요. 확인된 최단 경로를 안내해요."
-    if alternative["duration_s"] > math.floor(limit) or alternative["distance_m"] > MAX_ROUTE_DISTANCE_M:
-        return None, "등록 시설을 비교할 추가 경로가 설정한 우회 시간을 넘어 최단 경로를 안내해요."
-    if alternative["coordinates"] == base["coordinates"]:
-        return None, SAME_ROUTE_WARNING
-    graph = _candidate_graph([base, alternative])
-    selected = dijkstra(graph, "start", "finish", max_duration=math.floor(limit))
-    if not selected or not selected[0].reason.startswith("1") or not any(edge.reason == "1!" for edge in selected):
-        return None, NO_BETTER_WARNING
-    alternative.update({"id": "safe", "name": "안심 경로", "source": "TMAP 후보 2개 비교 · 다익스트라", "selection_mode": "provider_candidates", "warnings": ["전체 도로망의 최적 경로가 아니라 TMAP의 최단·대로우선 후보 2개를 비교한 결과예요.", "주변 등록 시설에 가중치를 적용한 후보이며 실제 안전이나 시설 작동을 보장하지 않아요."]})
-    return alternative, None
+        notes.append("추가 경로 후보를 불러오지 못했어요. 확인된 최단 경로를 안내해요.")
+    for lat, lon, _score in _via_points(start, end):
+        try:
+            raw = request_pedestrian_route(start[1], start[0], end[1], end[0], start_name, end_name, search_option="0", pass_list=[(lon, lat)])
+            consider(_tmap_route(raw), "시설 경유")
+        except Exception:
+            continue  # 경유지 후보는 보조 수단이라 실패해도 나머지 후보로 계속한다.
+    if not candidates:
+        return None, (SAME_ROUTE_WARNING if same else notes[0] if notes else NO_BETTER_WARNING)
+    costs = _candidate_costs([base] + candidates)
+    base_cost = costs.get(0, math.inf)
+    ranked = sorted(range(len(candidates)), key=lambda i: costs.get(i + 1, math.inf))
+    for index in ranked:
+        route = candidates[index]
+        if costs.get(index + 1, math.inf) >= base_cost - 1e-6:
+            break
+        risk, zones = safety_model.assess_route(route["coordinates"], lambda lat, lon: nearby_facilities(lat, lon, radius=50, limit=500))
+        candidate = {**route, "risk": risk, "caution_zones": zones}
+        if not _is_safer(candidate, base):
+            continue
+        count = len(candidates) + 1
+        route.update({"id": "safe", "name": "안심 경로", "source": f"TMAP 후보 {count}개 비교", "selection_mode": "provider_candidates", "candidate_count": count,
+                      "warnings": [f"전체 도로망의 최적 경로가 아니라 TMAP 후보 {count}개(최단·대로우선·시설 경유)를 비교한 결과예요.", "주변 등록 시설에 가중치를 적용한 후보이며 실제 안전이나 시설 작동을 보장하지 않아요."]})
+        route.pop("_kind", None)
+        return route, None
+    return None, NO_BETTER_WARNING
 
 
 def _is_safer(safe, base):
@@ -669,7 +749,7 @@ def compare_routes(payload):
             safe, warning = None, NO_BETTER_WARNING
     if safe:
         if safe.get("selection_mode") == "provider_candidates":
-            safe["reasons"].insert(0, "TMAP 경로 후보 2개의 구간별 시간과 등록 CCTV·가로등·비상벨·경찰시설의 근접 정보를 비교했어요.")
+            safe["reasons"].insert(0, f"TMAP 경로 후보 {safe.get('candidate_count', 2)}개의 구간별 시간과 등록 CCTV·가로등·비상벨·경찰시설의 근접 정보를 비교했어요.")
         else:
             safe["reasons"].insert(0, "확인된 구간별 주의 정보에 가중치를 적용해 설정한 우회 시간 안에서 경로를 계산했어요.")
         routes.append(safe)

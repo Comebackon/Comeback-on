@@ -20,7 +20,16 @@ def collection(*features):
     return {"type": "FeatureCollection", "features": list(features)}
 
 
+def north_facilities(lat, lon, **kwargs):
+    return [{"type": "CCTV"}, {"type": "가로등"}, {"type": "비상벨"}] if lat > 37.0002 else []
+
+
 class RouteTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(routing, "VIA_CANDIDATES", 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_missing_observations_have_no_penalty(self):
         graph, _ = routing.build_graph(collection(feature("a", "b", [[127, 37], [127.001, 37]])))
         edge = graph["a"][0]
@@ -154,7 +163,7 @@ class RouteTests(unittest.TestCase):
              patch("routing.route_evidence", return_value=({"CCTV": 3}, ["등록 CCTV 3곳"])), \
              patch("routing.nearby_facilities", side_effect=lambda lat, lon, **kw: [{"type": "CCTV"}, {"type": "가로등"}, {"type": "비상벨"}] if lat > 37.00005 else []), \
              patch("routing.request_pedestrian_route", side_effect=[self.tmap_response(), alt]), \
-             patch("routing.safety_model.assess_route", side_effect=[risk(*base_risk), risk(*safe_risk)]):
+             patch("routing.safety_model.assess_route", side_effect=lambda coords, nearby: risk(*base_risk) if coords == [[37, 127], [37, 127.001]] else risk(*safe_risk)):
             return routing.compare_routes(self.payload())
 
     def test_safe_label_requires_lower_risk(self):
@@ -174,6 +183,70 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(better["routes"][0]["id"], "safe")
         self.assertEqual(better["routes"][0]["selection_mode"], "provider_candidates")
         self.assertEqual(len(better["routes"]), 2)
+
+    def line_response(self, lonlat, distance, duration):
+        return {"features": [
+            {"properties": {"totalDistance": distance, "totalTime": duration}, "geometry": {"type": "Point", "coordinates": lonlat[0]}},
+            {"properties": {}, "geometry": {"type": "LineString", "coordinates": lonlat}}]}
+
+    def test_via_points_prefer_facility_rich_places_and_skip_short_trips(self):
+        with patch("routing.nearby_facilities", side_effect=north_facilities), patch.object(routing, "VIA_CANDIDATES", 2):
+            points = routing._via_points((37, 127), (37, 127.01))
+            self.assertTrue(1 <= len(points) <= 2)
+            self.assertTrue(all(lat > 37.0002 for lat, lon, score in points))
+            self.assertEqual(routing._via_points((37, 127), (37, 127.001)), [])  # 90m: 우회할 이유 없음
+        with patch("routing.nearby_facilities", return_value=[]), patch.object(routing, "VIA_CANDIDATES", 2):
+            self.assertEqual(routing._via_points((37, 127), (37, 127.01)), [])  # 시설이 없으면 후보도 없음
+
+    @patch.dict(os.environ, {"TMAP_APP_KEY": "test", "ROUTING_GRAPH_FILE": ""})
+    @patch("routing.route_evidence", return_value=({"CCTV": 3}, ["등록 CCTV 3곳"]))
+    @patch("routing.request_pedestrian_route")
+    def test_facility_via_candidate_gives_a_different_safe_route(self, provider, evidence):
+        base = self.line_response([[127, 37], [127.01, 37]], 890, 800)
+        via = self.line_response([[127, 37], [127.005, 37.002], [127.01, 37]], 995, 900)
+        def respond(*args, **kwargs):
+            if kwargs.get("pass_list"):
+                return via
+            return base  # 최단·대로우선은 같은 길
+        provider.side_effect = respond
+        payload = {"start": {"name": "출발", "lat": 37, "lon": 127}, "end": {"name": "도착", "lat": 37, "lon": 127.01}}
+        with patch("routing.nearby_facilities", side_effect=north_facilities), patch.object(routing, "VIA_CANDIDATES", 2):
+            result = routing.compare_routes(payload)
+        self.assertFalse(result["safe_is_shortest"])
+        self.assertEqual([r["id"] for r in result["routes"]], ["safe", result["routes"][1]["id"]])
+        self.assertEqual(result["routes"][0]["coordinates"], [[37, 127], [37.002, 127.005], [37, 127.01]])
+        self.assertEqual(result["routes"][0]["selection_mode"], "provider_candidates")
+        self.assertLess(result["routes"][0]["risk"]["probability"], result["routes"][1]["risk"]["probability"])
+        self.assertLessEqual(result["routes"][0]["duration_s"], result["detour"]["max_duration_s"])
+        self.assertTrue(any(call.kwargs.get("pass_list") for call in provider.call_args_list))
+
+    @patch.dict(os.environ, {"TMAP_APP_KEY": "test", "ROUTING_GRAPH_FILE": ""})
+    @patch("routing.route_evidence", return_value=({}, []))
+    @patch("routing.request_pedestrian_route")
+    def test_via_candidate_over_time_budget_is_ignored(self, provider, evidence):
+        base = self.line_response([[127, 37], [127.01, 37]], 890, 800)
+        slow = self.line_response([[127, 37], [127.005, 37.002], [127.01, 37]], 995, 5000)
+        provider.side_effect = lambda *a, **k: slow if k.get("pass_list") else base
+        payload = {"start": {"name": "출발", "lat": 37, "lon": 127}, "end": {"name": "도착", "lat": 37, "lon": 127.01}}
+        with patch("routing.nearby_facilities", side_effect=north_facilities), patch.object(routing, "VIA_CANDIDATES", 2):
+            result = routing.compare_routes(payload)
+        self.assertEqual(len(result["routes"]), 1)
+        self.assertEqual(result["routes"][0]["coordinates"], [[37, 127], [37, 127.01]])
+
+    @patch.dict(os.environ, {"TMAP_APP_KEY": "test", "ROUTING_GRAPH_FILE": ""})
+    @patch("routing.route_evidence", return_value=({}, []))
+    @patch("routing.request_pedestrian_route")
+    def test_via_request_failure_keeps_working(self, provider, evidence):
+        base = self.line_response([[127, 37], [127.01, 37]], 890, 800)
+        def respond(*a, **k):
+            if k.get("pass_list"):
+                raise OSError("down")
+            return base
+        provider.side_effect = respond
+        payload = {"start": {"name": "출발", "lat": 37, "lon": 127}, "end": {"name": "도착", "lat": 37, "lon": 127.01}}
+        with patch("routing.nearby_facilities", side_effect=north_facilities), patch.object(routing, "VIA_CANDIDATES", 2):
+            result = routing.compare_routes(payload)
+        self.assertTrue(result["safe_is_shortest"])
 
     @patch.dict(os.environ, {"TMAP_APP_KEY": "test", "ROUTING_GRAPH_FILE": ""})
     @patch("routing.route_evidence", return_value=({}, []))

@@ -82,3 +82,16 @@ def test_saved_key_reaches_provider_headers_but_not_public_api(key_dir, monkeypa
     assert secret not in response.get_data(as_text=True)
     assert client.get("/instance/tmap_app_key").status_code == 404
 
+
+
+def test_via_point_is_sent_as_pass_list(key_dir, monkeypatch):
+    setup_tmap.save_key("sample-test-only-local-key")
+    captured = []
+    def open_request(request, timeout):
+        captured.append(json.loads(request.data.decode()))
+        return io.BytesIO(json.dumps({"features": []}).encode())
+    monkeypatch.setattr(tmap_client, "urlopen", open_request)
+    tmap_client.request_pedestrian_route(127, 37, 127.01, 37.01, search_option="0", pass_list=[(127.005, 37.002)])
+    tmap_client.request_pedestrian_route(127, 37, 127.01, 37.01)
+    assert captured[0]["passList"] == "127.005000,37.002000"
+    assert "passList" not in captured[1]
