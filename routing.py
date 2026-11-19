@@ -544,10 +544,15 @@ def _candidate_graph(candidates):
 않는다. 노드 좌표는 반환된 실제 LineString 내부에서만 세분화한다.
 """
     graph = {"start": [], "finish": []}
+    # 모든 후보에 같은 보행 속도(첫 후보 기준 초/m)를 적용한다. 후보마다 자기 전체 시간÷거리로
+    # 나누면 똑같은 길이 경로에 따라 다른 비용이 되어, 공통 구간의 시간 차이로 선택이 뒤집힌다.
+    first = candidates[0]
+    first_length = sum(distance_m(a, b) for a, b in zip(first["coordinates"], first["coordinates"][1:]))
+    seconds_per_m = first["duration_s"] / first_length if first_length > 0 else 0
     for route_index, route in enumerate(candidates):
         segments = []
         total_length = sum(distance_m(a, b) for a, b in zip(route["coordinates"], route["coordinates"][1:]))
-        if total_length <= 0:
+        if total_length <= 0 or seconds_per_m <= 0:
             continue
         for a, b in zip(route["coordinates"], route["coordinates"][1:]):
             length = distance_m(a, b)
@@ -558,12 +563,15 @@ def _candidate_graph(candidates):
                 mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
                 # 로지스틱 위험 지표: 등록 시설이 있을 때만 비용이 줄고, 미등록은 중립(1.0).
                 factor = safety_model.cost_factor(safety_model.crime_grade_at(*mid), safety_model.facility_counts(nearby_facilities(*mid, radius=50)))
-                seconds = route["duration_s"] * (length / parts) / total_length
-                segments.append((p, q, seconds, 1 - factor))
+                seconds = route["duration_s"] * (length / parts) / total_length  # 시간 제한용(경로 자체 추정)
+                uniform = seconds_per_m * (length / parts)  # 비용용(모든 후보 공통 속도)
+                segments.append((p, q, seconds, uniform, 1 - factor))
         previous = "start"
-        for index, (p, q, seconds, discount) in enumerate(segments):
+        for index, (p, q, seconds, uniform, discount) in enumerate(segments):
             target = "finish" if index == len(segments) - 1 else f"{route_index}:{index}"
-            graph.setdefault(previous, []).append(Edge(target, [p, q], distance_m(p, q), seconds, seconds * (1 - discount), reason=str(route_index)))
+            # 할인이 실제로 적용된 구간만 reason에 "!"를 붙여 표시한다(속도 차이로 생긴 비용 차이와 구분).
+            tag = f"{route_index}!" if discount > 1e-9 else str(route_index)
+            graph.setdefault(previous, []).append(Edge(target, [p, q], distance_m(p, q), seconds, uniform * (1 - discount), reason=tag))
             graph.setdefault(target, [])
             previous = target
     return graph
@@ -592,10 +600,20 @@ def _provider_candidate(base, start, end, payload, limit, avoid_stairs):
         return None, SAME_ROUTE_WARNING
     graph = _candidate_graph([base, alternative])
     selected = dijkstra(graph, "start", "finish", max_duration=math.floor(limit))
-    if not selected or selected[0].reason != "1" or not any(edge.cost < edge.duration for edge in selected):
+    if not selected or not selected[0].reason.startswith("1") or not any(edge.reason == "1!" for edge in selected):
         return None, NO_BETTER_WARNING
     alternative.update({"id": "safe", "name": "안심 경로", "source": "TMAP 후보 2개 비교 · 다익스트라", "selection_mode": "provider_candidates", "warnings": ["전체 도로망의 최적 경로가 아니라 TMAP의 최단·대로우선 후보 2개를 비교한 결과예요.", "주변 등록 시설에 가중치를 적용한 후보이며 실제 안전이나 시설 작동을 보장하지 않아요."]})
     return alternative, None
+
+
+def _is_safer(safe, base):
+    """안심 경로로 표시하려면 위험 지표가 더 낮고 주의 구간이 늘지 않아야 한다. 비교 불가면 통과."""
+    s_risk, b_risk = safe.get("risk"), base.get("risk")
+    if not s_risk or not b_risk:
+        return True
+    if s_risk.get("probability", 0) >= b_risk.get("probability", 0):
+        return False
+    return len(safe.get("caution_zones") or []) <= len(base.get("caution_zones") or [])
 
 
 def compare_routes(payload):
@@ -646,6 +664,10 @@ def compare_routes(payload):
         safe["facility_counts"], safe["reasons"] = route_evidence(safe["coordinates"])
         safe["facility_points"] = route_facility_points(safe["coordinates"])
         safe["risk"], safe["caution_zones"] = safety_model.assess_route(safe["coordinates"], lambda lat, lon: nearby_facilities(lat, lon, radius=50, limit=500))
+        if safe.get("selection_mode") == "provider_candidates" and not _is_safer(safe, base):
+            # 비용으로 골랐더라도 위험 지표가 낮아지지 않았다면 안심 경로라고 표시하지 않는다.
+            safe, warning = None, NO_BETTER_WARNING
+    if safe:
         if safe.get("selection_mode") == "provider_candidates":
             safe["reasons"].insert(0, "TMAP 경로 후보 2개의 구간별 시간과 등록 CCTV·가로등·비상벨·경찰시설의 근접 정보를 비교했어요.")
         else:

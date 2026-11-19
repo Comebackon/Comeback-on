@@ -116,16 +116,64 @@ class RouteTests(unittest.TestCase):
     @patch("routing.nearby_facilities")
     @patch("routing.request_pedestrian_route")
     def test_real_candidate_with_observed_support_can_be_selected(self, provider, facilities, evidence):
-        alt = self.tmap_response(duration=1100)
-        alt["features"][1]["geometry"]["coordinates"] = [[127, 37], [127.0005, 37.001], [127.001, 37]]
+        alt = self.tmap_response(duration=1110)  # 후보 거리에 비례한 시간(같은 보행 속도)
+        alt["features"][1]["geometry"]["coordinates"] = [[127, 37], [127.0005, 37.0002], [127.001, 37]]
         provider.side_effect = [self.tmap_response(), alt]
         facilities.side_effect = lambda lat, lon, **kwargs: ([{"type": "CCTV"}, {"type": "가로등"}, {"type": "비상벨"}] if lat > 37.00005 else [])
         result = routing.compare_routes(self.payload())
         self.assertTrue(result["safe_available"])
         self.assertEqual(result["routes"][0]["selection_mode"], "provider_candidates")
-        self.assertEqual(result["routes"][0]["coordinates"], [[37, 127], [37.001, 127.0005], [37, 127.001]])
+        self.assertEqual(result["routes"][0]["coordinates"], [[37, 127], [37.0002, 127.0005], [37, 127.001]])
         self.assertLessEqual(result["routes"][0]["duration_s"], result["detour"]["max_duration_s"])
         self.assertEqual(provider.call_count, 2)
+
+    @patch("routing.nearby_facilities", return_value=[])
+    def test_shared_road_costs_the_same_in_every_candidate(self, facilities):
+        # 같은 길인데 후보마다 TMAP 속도 추정이 달라도 비용은 같아야 한다(회귀: 공통 구간이 선택을 뒤집음).
+        coords = [[37, 127], [37, 127.001], [37, 127.002]]
+        slow = {"coordinates": coords, "duration_s": 200}
+        fast = {"coordinates": coords, "duration_s": 180}
+        graph = routing._candidate_graph([slow, fast])
+        def total(route_index):
+            edges, node, seen = [], "start", set()
+            for edge in graph["start"]:
+                if edge.reason.startswith(str(route_index)):
+                    edges.append(edge); node = edge.target
+                    while graph.get(node):
+                        edge = graph[node][0]; edges.append(edge); node = edge.target
+                    break
+            return sum(e.cost for e in edges)
+        self.assertAlmostEqual(total(0), total(1), places=6)
+
+    def _run_with_risks(self, base_risk, safe_risk):
+        alt = self.tmap_response(duration=1110)
+        alt["features"][1]["geometry"]["coordinates"] = [[127, 37], [127.0005, 37.0002], [127.001, 37]]
+        def risk(probability, zones):
+            return ({"model": "logistic", "probability": probability, "percent": round(probability * 100), "level": "보통", "crime_grade": None, "note": ""}, [{"lat": 37, "lon": 127, "length_m": 50, "percent": 31}] * zones)
+        with patch.dict(os.environ, {"TMAP_APP_KEY": "test", "ROUTING_GRAPH_FILE": ""}), \
+             patch("routing.route_evidence", return_value=({"CCTV": 3}, ["등록 CCTV 3곳"])), \
+             patch("routing.nearby_facilities", side_effect=lambda lat, lon, **kw: [{"type": "CCTV"}, {"type": "가로등"}, {"type": "비상벨"}] if lat > 37.00005 else []), \
+             patch("routing.request_pedestrian_route", side_effect=[self.tmap_response(), alt]), \
+             patch("routing.safety_model.assess_route", side_effect=[risk(*base_risk), risk(*safe_risk)]):
+            return routing.compare_routes(self.payload())
+
+    def test_safe_label_requires_lower_risk(self):
+        worse = self._run_with_risks((0.15, 5), (0.16, 6))
+        self.assertTrue(worse["safe_is_shortest"])
+        self.assertEqual(len(worse["routes"]), 1)
+        self.assertEqual(worse["routes"][0]["selection_mode"], "same_as_shortest")
+
+    def test_safe_label_requires_no_more_caution_zones(self):
+        more_zones = self._run_with_risks((0.20, 1), (0.10, 2))
+        self.assertTrue(more_zones["safe_is_shortest"])
+        self.assertEqual(len(more_zones["routes"]), 1)
+
+    def test_lower_risk_candidate_is_labelled_safe(self):
+        better = self._run_with_risks((0.20, 2), (0.10, 1))
+        self.assertFalse(better["safe_is_shortest"])
+        self.assertEqual(better["routes"][0]["id"], "safe")
+        self.assertEqual(better["routes"][0]["selection_mode"], "provider_candidates")
+        self.assertEqual(len(better["routes"]), 2)
 
     @patch.dict(os.environ, {"TMAP_APP_KEY": "test", "ROUTING_GRAPH_FILE": ""})
     @patch("routing.route_evidence", return_value=({}, []))
