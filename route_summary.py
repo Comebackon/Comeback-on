@@ -19,7 +19,7 @@ from urllib.request import Request, urlopen
 API_URL = "https://api.anthropic.com/v1/messages"
 DEFAULT_MODEL = "claude-haiku-5-5"
 log = logging.getLogger(__name__)
-TIMEOUT_S = 8
+TIMEOUT_S = 15
 MAX_CHARS = 300
 FACILITY_KINDS = ("CCTV", "가로등", "비상벨", "경찰시설", "편의점", "안전시설물")
 ROUTE_IDS = {"safe": "안심 경로", "basic": "최단 경로"}
@@ -110,11 +110,12 @@ def llm_summary(facts):
             return _cache[key]
     body = json.dumps({
         "model": os.environ.get("ANTHROPIC_MODEL", "").strip() or DEFAULT_MODEL,
-        "max_tokens": 400,
+        "max_tokens": 1500,
         "system": SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": json.dumps(facts, ensure_ascii=False)}],
     }).encode()
     request = Request(API_URL, data=body, method="POST", headers={"content-type": "application/json", "x-api-key": api_key, "anthropic-version": "2023-06-01"})
+    payload = {}
     try:
         with urlopen(request, timeout=TIMEOUT_S) as response:
             payload = json.loads(response.read(65536).decode())
@@ -130,7 +131,9 @@ def llm_summary(facts):
         log.warning("AI summary failed: %s", exc)
         return None
     if not text:
-        log.warning("AI summary rejected: empty response")
+        blocks = payload.get("content", []) if isinstance(payload, dict) else []
+        log.warning("AI summary rejected: empty response (stop_reason=%s, blocks=%s)", payload.get("stop_reason") if isinstance(payload, dict) else None,
+                    [b.get("type") if isinstance(b, dict) else type(b).__name__ for b in blocks])
         return None
     if len(text) > MAX_CHARS:
         log.warning("AI summary rejected: too long (%d chars)", len(text))
