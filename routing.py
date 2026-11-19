@@ -587,7 +587,10 @@ SAFE_IS_SHORTEST_MESSAGES = {
 
 
 # 시설이 많은 곳을 지나가는 경유지 후보 수. 0이면 TMAP 최단·대로우선 후보만 비교한다.
-VIA_CANDIDATES = 2
+try:  # Render 환경 변수 VIA_CANDIDATES=0 으로 코드 배포 없이 끌 수 있다.
+    VIA_CANDIDATES = max(0, min(3, int(os.environ.get("VIA_CANDIDATES", "2"))))
+except ValueError:
+    VIA_CANDIDATES = 2
 VIA_FACILITY_WEIGHT = {"CCTV": 1.0, "가로등": .5, "비상벨": 2.0, "경찰시설": 3.0}
 
 
