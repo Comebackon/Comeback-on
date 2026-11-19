@@ -122,7 +122,7 @@ class TestSummary:
         assert route_summary.summarize(FACTS)[1] == "llm"
         assert opened.call_count == 1
 
-    @pytest.mark.parametrize("reply", ["이 길은 안전합니다.", "x" * 300, ""])
+    @pytest.mark.parametrize("reply", ["이 길은 안전합니다.", "x" * 301, ""])
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "k"})
     @patch("route_summary.urlopen")
     def test_unsafe_or_bad_llm_text_falls_back(self, opened, reply):

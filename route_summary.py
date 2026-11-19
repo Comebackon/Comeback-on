@@ -9,6 +9,7 @@
 
 import hashlib
 import json
+import logging
 import os
 import threading
 from collections import OrderedDict
@@ -17,8 +18,9 @@ from urllib.request import Request, urlopen
 
 API_URL = "https://api.anthropic.com/v1/messages"
 DEFAULT_MODEL = "claude-haiku-5-5"
+log = logging.getLogger(__name__)
 TIMEOUT_S = 8
-MAX_CHARS = 200
+MAX_CHARS = 300
 FACILITY_KINDS = ("CCTV", "가로등", "비상벨", "경찰시설", "편의점", "안전시설물")
 ROUTE_IDS = {"safe": "안심 경로", "basic": "최단 경로"}
 
@@ -108,7 +110,7 @@ def llm_summary(facts):
             return _cache[key]
     body = json.dumps({
         "model": os.environ.get("ANTHROPIC_MODEL", "").strip() or DEFAULT_MODEL,
-        "max_tokens": 200,
+        "max_tokens": 400,
         "system": SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": json.dumps(facts, ensure_ascii=False)}],
     }).encode()
@@ -117,9 +119,25 @@ def llm_summary(facts):
         with urlopen(request, timeout=TIMEOUT_S) as response:
             payload = json.loads(response.read(65536).decode())
         text = "".join(block.get("text", "") for block in payload.get("content", []) if isinstance(block, dict) and block.get("type") == "text").strip()
-    except (HTTPError, URLError, OSError, ValueError, AttributeError):
+    except HTTPError as exc:
+        try:
+            detail = exc.read(300).decode("utf-8", "replace")
+        except Exception:
+            detail = ""
+        log.warning("AI summary failed: HTTP %s %s", exc.code, detail)
         return None
-    if not text or len(text) > MAX_CHARS or any(banned in text for banned in ("안전합니다", "안전해요", "위험하지 않", "보장해요", "```")):
+    except (URLError, OSError, ValueError, AttributeError) as exc:
+        log.warning("AI summary failed: %s", exc)
+        return None
+    if not text:
+        log.warning("AI summary rejected: empty response")
+        return None
+    if len(text) > MAX_CHARS:
+        log.warning("AI summary rejected: too long (%d chars)", len(text))
+        return None
+    hit = next((b for b in ("안전합니다", "안전해요", "위험하지 않", "보장해요", "```") if b in text), None)
+    if hit:
+        log.warning("AI summary rejected: banned phrase %r", hit)
         return None
     with _lock:
         _cache[key] = text
